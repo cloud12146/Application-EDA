@@ -1,0 +1,647 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Authenticated user account and RBAC role assignment.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["Super Admin", "Admin", "Zonal Sales Manager (ZSM)", "Regional Sales Manager (RSM)", "Area Sales Manager (ASM)", "Marketing Executive (ME)", "Zonal Sales Manager", "Area Sales Manager", "RSM (Zonal Sales Manager)", "Manager", "Field Sales Employee", "Stock Manager", "Distributor", "Pending"] },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "isActive": { "type": "boolean" },
+        "phone": { "type": "string", "maxLength": 32 },
+        "department": { "type": "string", "maxLength": 80 },
+        "designation": { "type": "string", "maxLength": 80 },
+        "territory": { "type": "string", "maxLength": 120 },
+        "fcmEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "isActive", "createdAt", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted admin registry for role lookup.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 254 },
+        "role": { "type": "string", "enum": ["Super Admin", "Admin"] },
+        "grantedAt": { "type": "string", "format": "date-time" },
+        "grantedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["uid", "email", "role", "grantedAt"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "Company employee master record and role invitation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "employeeCode": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 254 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "role": { "type": "string", "enum": ["Super Admin", "Admin", "Zonal Sales Manager (ZSM)", "Regional Sales Manager (RSM)", "Area Sales Manager (ASM)", "Marketing Executive (ME)", "Zonal Sales Manager", "Area Sales Manager", "RSM (Zonal Sales Manager)", "Manager", "Field Sales Employee", "Stock Manager", "Distributor"] },
+        "department": { "type": "string", "maxLength": 80 },
+        "designation": { "type": "string", "maxLength": 80 },
+        "territory": { "type": "string", "maxLength": 120 },
+        "assignedWarehouse": { "type": "string", "maxLength": 120 },
+        "geofenceLat": { "type": "number" },
+        "geofenceLng": { "type": "number" },
+        "geofenceRadiusM": { "type": "number" },
+        "status": { "type": "string", "enum": ["Active", "Inactive", "On Leave"] },
+        "joiningDate": { "type": "string", "maxLength": 32 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["employeeCode", "fullName", "email", "role", "department", "status", "createdAt", "updatedAt"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "GPS-verified daily attendance record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "department": { "type": "string", "maxLength": 80 },
+        "date": { "type": "string", "maxLength": 16 },
+        "workMode": { "type": "string", "enum": ["Office", "Field"] },
+        "status": { "type": "string", "enum": ["Present", "Absent", "Late", "Half-day", "Leave"] },
+        "checkInTime": { "type": "string", "maxLength": 40 },
+        "checkOutTime": { "type": "string", "maxLength": 40 },
+        "checkInLat": { "type": "number" },
+        "checkInLng": { "type": "number" },
+        "checkInAccuracy": { "type": "number" },
+        "checkOutLat": { "type": "number" },
+        "checkOutLng": { "type": "number" },
+        "workingMinutes": { "type": "number" },
+        "locationLabel": { "type": "string", "maxLength": 200 },
+        "correctedBy": { "type": "string", "maxLength": 120 },
+        "correctionReason": { "type": "string", "maxLength": 300 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "employeeName", "date", "workMode", "status", "createdAt", "updatedAt"]
+    },
+    "LeaveRequest": {
+      "title": "LeaveRequest",
+      "description": "Employee leave request and approval state.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "leaveType": { "type": "string", "enum": ["Casual", "Sick", "Earned", "Field Off"] },
+        "startDate": { "type": "string", "maxLength": 16 },
+        "endDate": { "type": "string", "maxLength": 16 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Rejected"] },
+        "reviewedBy": { "type": "string", "maxLength": 120 },
+        "reviewRemarks": { "type": "string", "maxLength": 300 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "employeeName", "leaveType", "startDate", "endDate", "reason", "status", "createdAt", "updatedAt"]
+    },
+    "LocationPing": {
+      "title": "LocationPing",
+      "description": "Transparent work-hour GPS location record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "territory": { "type": "string", "maxLength": 120 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "trackingActive": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["On Duty", "Customer Visit", "In Transit", "Checked Out"] },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 140 },
+        "withinGeofence": { "type": "boolean" },
+        "note": { "type": "string", "maxLength": 240 },
+        "recordedAt": { "type": "string", "format": "date-time" },
+        "isDemo": { "type": "boolean" }
+      },
+      "required": ["userId", "employeeName", "lat", "lng", "accuracy", "trackingActive", "status", "recordedAt"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Assigned operational or field task.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 180 },
+        "description": { "type": "string", "maxLength": 1200 },
+        "instructions": { "type": "string", "maxLength": 1200 },
+        "assignedToUid": { "type": "string", "maxLength": 128 },
+        "assignedToName": { "type": "string", "maxLength": 120 },
+        "teamName": { "type": "string", "maxLength": 100 },
+        "category": { "type": "string", "enum": ["Sales", "Customer Visit", "Stock Management", "Delivery", "Collection", "Reporting", "General Work"] },
+        "priority": { "type": "string", "enum": ["Low", "Medium", "High", "Urgent"] },
+        "startDate": { "type": "string", "maxLength": 32 },
+        "deadline": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["Assigned", "Accepted", "In Progress", "Completed", "Pending Approval", "Approved", "Rejected", "Overdue", "Cancelled"] },
+        "progressPct": { "type": "number" },
+        "completionProofUrl": { "type": "string", "maxLength": 600 },
+        "completionNotes": { "type": "string", "maxLength": 800 },
+        "extensionRequestedDate": { "type": "string", "maxLength": 32 },
+        "extensionReason": { "type": "string", "maxLength": 400 },
+        "adminRemarks": { "type": "string", "maxLength": 500 },
+        "rejectionReason": { "type": "string", "maxLength": 500 },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "assignedToUid", "assignedToName", "category", "priority", "startDate", "deadline", "status", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "TaskUpdate": {
+      "title": "TaskUpdate",
+      "description": "Progress comments and proof entries for tasks.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "taskId": { "type": "string", "maxLength": 128 },
+        "authorUid": { "type": "string", "maxLength": 128 },
+        "authorName": { "type": "string", "maxLength": 120 },
+        "actionType": { "type": "string", "maxLength": 60 },
+        "comment": { "type": "string", "maxLength": 800 },
+        "progressPct": { "type": "number" },
+        "attachmentUrl": { "type": "string", "maxLength": 600 },
+        "attachmentName": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["taskId", "authorUid", "authorName", "actionType", "comment", "createdAt"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Immutable work activity and audit trail.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "action": { "type": "string", "maxLength": 80 },
+        "entityType": { "type": "string", "maxLength": 60 },
+        "entityId": { "type": "string", "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 500 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "employeeName", "action", "details", "createdAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Pharmaceutical product batch and stock definition.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "sku": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "category": { "type": "string", "maxLength": 80 },
+        "brand": { "type": "string", "maxLength": 80 },
+        "unit": { "type": "string", "maxLength": 40 },
+        "batchNumber": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "mfgDate": { "type": "string", "maxLength": 20 },
+        "expiryDate": { "type": "string", "maxLength": 20 },
+        "purchasePrice": { "type": "number" },
+        "sellingPrice": { "type": "number" },
+        "openingStock": { "type": "number" },
+        "availableStock": { "type": "number" },
+        "minStockLevel": { "type": "number" },
+        "damagedStock": { "type": "number" },
+        "warehouse": { "type": "string", "maxLength": 120 },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "sku", "category", "brand", "unit", "batchNumber", "mfgDate", "expiryDate", "purchasePrice", "sellingPrice", "openingStock", "availableStock", "minStockLevel", "createdAt", "updatedAt"]
+    },
+    "StockMovement": {
+      "title": "StockMovement",
+      "description": "Stock transaction ledger entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "maxLength": 160 },
+        "sku": { "type": "string", "maxLength": 64 },
+        "batchNumber": { "type": "string", "maxLength": 64 },
+        "movementType": { "type": "string", "enum": ["Stock In", "Stock Out", "Stock Transfer", "Stock Return", "Stock Adjustment", "Damaged", "Expired", "Allocation"] },
+        "quantity": { "type": "number" },
+        "previousStock": { "type": "number" },
+        "newStock": { "type": "number" },
+        "fromLocation": { "type": "string", "maxLength": 120 },
+        "toLocation": { "type": "string", "maxLength": 120 },
+        "targetUserId": { "type": "string", "maxLength": 128 },
+        "targetName": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["Approved", "Pending Approval", "Rejected"] },
+        "reason": { "type": "string", "maxLength": 400 },
+        "performedByUid": { "type": "string", "maxLength": 128 },
+        "performedByName": { "type": "string", "maxLength": 120 },
+        "approvedByUid": { "type": "string", "maxLength": 128 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["productId", "productName", "batchNumber", "movementType", "quantity", "status", "performedByUid", "performedByName", "createdAt"]
+    },
+    "StockAllocation": {
+      "title": "StockAllocation",
+      "description": "Stock allocated to field employees or distributors.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "productName": { "type": "string", "maxLength": 160 },
+        "sku": { "type": "string", "maxLength": 64 },
+        "batchNumber": { "type": "string", "maxLength": 64 },
+        "holderUid": { "type": "string", "maxLength": 128 },
+        "holderName": { "type": "string", "maxLength": 120 },
+        "holderRole": { "type": "string", "enum": ["Employee", "Distributor"] },
+        "allocatedQty": { "type": "number" },
+        "soldQty": { "type": "number" },
+        "remainingQty": { "type": "number" },
+        "isDemo": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["productId", "productName", "batchNumber", "holderUid", "holderName", "holderRole", "allocatedQty", "soldQty", "remainingQty", "updatedAt"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Pharmacy, hospital, clinic, or wholesale customer.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "businessName": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "address": { "type": "string", "maxLength": 300 },
+        "city": { "type": "string", "maxLength": 100 },
+        "category": { "type": "string", "enum": ["Retail Pharmacy", "Hospital", "Clinic", "Stockist", "Wholesaler"] },
+        "assignedEmployeeUid": { "type": "string", "maxLength": 128 },
+        "assignedEmployeeName": { "type": "string", "maxLength": 120 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "outstandingBalance": { "type": "number" },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "businessName", "phone", "city", "category", "assignedEmployeeUid", "assignedEmployeeName", "createdAt", "updatedAt"]
+    },
+    "SalesOrder": {
+      "title": "SalesOrder",
+      "description": "Sales order and invoice record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 64 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 140 },
+        "customerBusiness": { "type": "string", "maxLength": 160 },
+        "distributorUid": { "type": "string", "maxLength": 128 },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "discountPct": { "type": "number" },
+        "discountAmount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "pendingAmount": { "type": "number" },
+        "orderStatus": { "type": "string", "enum": ["Pending", "Approved", "Packed", "Dispatched", "Delivered", "Cancelled", "Returned"] },
+        "paymentStatus": { "type": "string", "enum": ["Paid", "Partially Paid", "Pending"] },
+        "orderType": { "type": "string", "enum": ["Customer Sale", "Distributor Purchase"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderNumber", "customerId", "customerName", "createdByUid", "createdByName", "items", "totalAmount", "paidAmount", "pendingAmount", "orderStatus", "paymentStatus", "orderType", "createdAt", "updatedAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Customer or distributor payment collection record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 64 },
+        "payerUid": { "type": "string", "maxLength": 128 },
+        "payerName": { "type": "string", "maxLength": 140 },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "enum": ["Bank Transfer", "UPI", "Cheque", "Cash", "NEFT"] },
+        "referenceNo": { "type": "string", "maxLength": 80 },
+        "collectedByUid": { "type": "string", "maxLength": 128 },
+        "collectedByName": { "type": "string", "maxLength": 120 },
+        "paymentDate": { "type": "string", "maxLength": 32 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "orderNumber", "payerName", "amount", "method", "collectedByUid", "collectedByName", "paymentDate", "createdAt"]
+    },
+    "Distributor": {
+      "title": "Distributor",
+      "description": "Authorized pharmaceutical distributor profile.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "companyName": { "type": "string", "maxLength": 160 },
+        "contactPerson": { "type": "string", "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 254 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "city": { "type": "string", "maxLength": 100 },
+        "region": { "type": "string", "maxLength": 100 },
+        "gstNumber": { "type": "string", "maxLength": 40 },
+        "creditLimit": { "type": "number" },
+        "outstandingAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["Active", "Suspended"] },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyName", "contactPerson", "email", "city", "status", "createdAt", "updatedAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notification alert.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "recipientUid": { "type": "string", "maxLength": 128 },
+        "targetRole": { "type": "string", "maxLength": 64 },
+        "title": { "type": "string", "maxLength": 160 },
+        "message": { "type": "string", "maxLength": 500 },
+        "category": { "type": "string", "enum": ["Task", "Attendance", "Inventory", "Order", "Payment", "Leave", "Expense", "System"] },
+        "severity": { "type": "string", "enum": ["info", "warning", "urgent"] },
+        "isRead": { "type": "boolean" },
+        "linkTab": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recipientUid", "title", "message", "category", "severity", "isRead", "createdAt"]
+    },
+    "CompanySettings": {
+      "title": "CompanySettings",
+      "description": "Global company ERP settings and first-admin lock.",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string", "maxLength": 160 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "ownerEmail": { "type": "string", "maxLength": 254 },
+        "officeLat": { "type": "number" },
+        "officeLng": { "type": "number" },
+        "officeRadiusM": { "type": "number" },
+        "workStartTime": { "type": "string", "maxLength": 16 },
+        "workEndTime": { "type": "string", "maxLength": 16 },
+        "lowStockDefault": { "type": "number" },
+        "expiryAlertDays": { "type": "number" },
+        "currencySymbol": { "type": "string", "maxLength": 12 },
+        "demoDataSeeded": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyName", "ownerUid", "ownerEmail", "officeLat", "officeLng", "officeRadiusM", "updatedAt"]
+    },
+    "TourPlan": {
+      "title": "TourPlan",
+      "description": "Monthly tour plan schedule mapping daily field visit places and routes.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "employeeUid": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "month": { "type": "string", "maxLength": 10 },
+        "date": { "type": "string", "maxLength": 16 },
+        "workType": { "type": "string", "enum": ["Field Visit", "HQ / Office", "Outstation", "Transit", "Stockist Meet", "CME / Camp", "Leave / Holiday"] },
+        "headquarters": { "type": "string", "maxLength": 120 },
+        "placesToVisit": { "type": "string", "maxLength": 300 },
+        "routeZone": { "type": "string", "maxLength": 120 },
+        "plannedCustomers": { "type": "string", "maxLength": 300 },
+        "objective": { "type": "string", "maxLength": 400 },
+        "overnightStay": { "type": "boolean" },
+        "approvalStatus": { "type": "string", "enum": ["Draft", "Submitted", "Approved", "Rejected"] },
+        "adminRemarks": { "type": "string", "maxLength": 300 },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["employeeUid", "employeeName", "month", "date", "workType", "placesToVisit", "approvalStatus", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "Doctor": {
+      "title": "Doctor",
+      "description": "Doctor master record for medical representative detailing calls.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "specialty": { "type": "string", "maxLength": 80 },
+        "qualification": { "type": "string", "maxLength": 60 },
+        "clinicName": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "city": { "type": "string", "maxLength": 100 },
+        "areaBeat": { "type": "string", "maxLength": 120 },
+        "address": { "type": "string", "maxLength": 250 },
+        "tier": { "type": "string", "enum": ["Core A+", "Class A", "Class B"] },
+        "assignedEmployeeUid": { "type": "string", "maxLength": 128 },
+        "assignedEmployeeName": { "type": "string", "maxLength": 120 },
+        "totalCalls": { "type": "number" },
+        "lastVisitedDate": { "type": "string", "maxLength": 20 },
+        "lastCallOutcome": { "type": "string", "enum": ["Interested", "Prescribing", "Follow-up Required", "Sample Requested", "Not Available", "Declined"] },
+        "lastDoctorRemark": { "type": "string", "maxLength": 600 },
+        "lastProductsShown": { "type": "string", "maxLength": 300 },
+        "lastCallLat": { "type": "number" },
+        "lastCallLng": { "type": "number" },
+        "lastCallLocation": { "type": "string", "maxLength": 200 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "specialty", "clinicName", "city", "assignedEmployeeUid", "assignedEmployeeName", "createdAt", "updatedAt"]
+    },
+    "DoctorCall": {
+      "title": "DoctorCall",
+      "description": "Product detailing call and doctor feedback remarks log.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "doctorId": { "type": "string", "maxLength": 128 },
+        "doctorName": { "type": "string", "maxLength": 120 },
+        "clinicName": { "type": "string", "maxLength": 160 },
+        "specialty": { "type": "string", "maxLength": 80 },
+        "areaBeat": { "type": "string", "maxLength": 120 },
+        "employeeUid": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "callDate": { "type": "string", "maxLength": 16 },
+        "productsShown": { "type": "array" },
+        "samplesGiven": { "type": "string", "maxLength": 240 },
+        "callOutcome": { "type": "string", "enum": ["Interested", "Prescribing", "Follow-up Required", "Sample Requested", "Not Available", "Declined"] },
+        "doctorRemark": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "nextFollowUpDate": { "type": "string", "maxLength": 20 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "locationName": { "type": "string", "maxLength": 200 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["doctorId", "doctorName", "employeeUid", "employeeName", "callDate", "productsShown", "callOutcome", "doctorRemark", "createdAt"]
+    },
+    "BiometricCredential": {
+      "title": "BiometricCredential",
+      "description": "WebAuthn platform passkey metadata enrolled for Fingerprint or FaceID unlock.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "credentialId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 254 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "deviceLabel": { "type": "string", "maxLength": 120 },
+        "isActive": { "type": "boolean" },
+        "lastUsedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["credentialId", "userId", "email", "displayName", "deviceLabel", "isActive", "createdAt"]
+    },
+    "ExpenseClaim": {
+      "title": "ExpenseClaim",
+      "description": "Field sales travel, daily allowance, and receipt-backed expense claim.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 120 },
+        "department": { "type": "string", "maxLength": 80 },
+        "territory": { "type": "string", "maxLength": 120 },
+        "expenseDate": { "type": "string", "maxLength": 16 },
+        "category": { "type": "string", "enum": ["Travel / Fuel", "Daily Allowance", "Meals & Hospitality", "Lodging / Hotel", "Doctor Visit / CME", "Courier / Misc"] },
+        "amount": { "type": "number" },
+        "travelFrom": { "type": "string", "maxLength": 120 },
+        "travelTo": { "type": "string", "maxLength": 120 },
+        "distanceKm": { "type": "number" },
+        "description": { "type": "string", "maxLength": 500 },
+        "receiptUrl": { "type": "string", "maxLength": 1000 },
+        "receiptPath": { "type": "string", "maxLength": 240 },
+        "status": { "type": "string", "enum": ["Draft", "Pending Approval", "Approved", "Rejected", "Reimbursed"] },
+        "reviewedByUid": { "type": "string", "maxLength": 128 },
+        "reviewedByName": { "type": "string", "maxLength": 120 },
+        "reviewRemarks": { "type": "string", "maxLength": 400 },
+        "reimbursedRef": { "type": "string", "maxLength": 80 },
+        "isDemo": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "employeeName", "expenseDate", "category", "amount", "description", "status", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "User accounts and roles (PII restricted to owner or admin)."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Trusted admin lookup table."
+    },
+    "/employees/{employeeId}": {
+      "schema": { "$ref": "#/entities/Employee" },
+      "description": "Employee master records and pre-assigned role invitations."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Daily employee attendance records with GPS coordinates."
+    },
+    "/leaveRequests/{leaveId}": {
+      "schema": { "$ref": "#/entities/LeaveRequest" },
+      "description": "Leave requests submitted by employees."
+    },
+    "/locations/{locationId}": {
+      "schema": { "$ref": "#/entities/LocationPing" },
+      "description": "Authorized work-hour GPS tracking records."
+    },
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "Assigned tasks and completion proof."
+    },
+    "/taskUpdates/{updateId}": {
+      "schema": { "$ref": "#/entities/TaskUpdate" },
+      "description": "Comments and progress logs linked to tasks."
+    },
+    "/activityLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Work activity timeline and audit logs."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Pharmaceutical products and batch inventory."
+    },
+    "/stockMovements/{movementId}": {
+      "schema": { "$ref": "#/entities/StockMovement" },
+      "description": "Stock transactions and adjustment approvals."
+    },
+    "/stockAllocations/{allocationId}": {
+      "schema": { "$ref": "#/entities/StockAllocation" },
+      "description": "Allocated stock per field employee or distributor."
+    },
+    "/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Customer directory and assigned field representatives."
+    },
+    "/salesOrders/{orderId}": {
+      "schema": { "$ref": "#/entities/SalesOrder" },
+      "description": "Customer sales orders and distributor purchase orders."
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Payment receipts against sales orders."
+    },
+    "/distributors/{distributorId}": {
+      "schema": { "$ref": "#/entities/Distributor" },
+      "description": "Distributor accounts and credit limits."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Targeted user and role notifications."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/CompanySettings" },
+      "description": "Company configuration and first-admin bootstrap lock."
+    },
+    "/tourPlans/{planId}": {
+      "schema": { "$ref": "#/entities/TourPlan" },
+      "description": "Monthly field force tour plan schedule and daily visit locations."
+    },
+    "/doctors/{doctorId}": {
+      "schema": { "$ref": "#/entities/Doctor" },
+      "description": "Doctor directory assigned to medical representatives."
+    },
+    "/doctorCalls/{callId}": {
+      "schema": { "$ref": "#/entities/DoctorCall" },
+      "description": "Doctor detailing calls, products shown, and doctor remarks."
+    },
+    "/biometricCredentials/{credId}": {
+      "schema": { "$ref": "#/entities/BiometricCredential" },
+      "description": "Enrolled WebAuthn platform biometric devices per employee."
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/ExpenseClaim" },
+      "description": "Field sales travel and daily expense claims with receipt images and approval workflow."
+    }
+  }
+}

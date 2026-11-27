@@ -1,0 +1,79 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #F4F6F9;
+    color: #0F172A;
+  }
+
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Safe area bottom padding for Android & iOS PWAs */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Glacetor animated logo loader */
+@keyframes glacetor-breathe {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.96;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+}
+
+@keyframes glacetor-orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-glacetor-breathe {
+  animation: glacetor-breathe 2.1s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.animate-glacetor-orbit {
+  animation: glacetor-orbit 1.15s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-glacetor-breathe,
+  .animate-glacetor-orbit {
+    animation: none !important;
+  }
+}
+
+/* Leaflet map container z-index discipline */
+.leaflet-container {
+  font-family: var(--font-sans);
+  z-index: 10;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #FFFFFF !important;
+  }
+}

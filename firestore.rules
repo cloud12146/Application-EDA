@@ -1,0 +1,1288 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Primitive Helpers
+    // =========================================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function emailToKey(email) {
+      return email.lower().replace('[^a-z0-9_\\-]', '_');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isBootstrapOwner() {
+      return isVerifiedUser() && request.auth.token.email == 'dp7037506@gmail.com';
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        isBootstrapOwner() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function hasUserDoc() {
+      return isVerifiedUser() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function currentUserDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveUser() {
+      return hasUserDoc() && currentUserDoc().isActive == true && currentUserDoc().role != 'Pending';
+    }
+
+    function isManagerOrAdmin() {
+      return isAdmin() || (
+        isActiveUser() && currentUserDoc().role in [
+          'Super Admin', 'Admin', 'Zonal Sales Manager (ZSM)', 'Regional Sales Manager (RSM)', 'Area Sales Manager (ASM)', 'Zonal Sales Manager', 'Area Sales Manager', 'RSM (Zonal Sales Manager)', 'Manager'
+        ]
+      );
+    }
+
+    function isStockAuthorized() {
+      return isManagerOrAdmin() || (
+        isActiveUser() && currentUserDoc().role == 'Stock Manager'
+      );
+    }
+
+    function isNonEmptyStr(val, maxLen) {
+      return val is string && val.size() >= 1 && val.size() <= maxLen;
+    }
+
+    function isOptStr(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isOptNum(data, key) {
+      return !(key in data) || data[key] is number;
+    }
+
+    function isOptBool(data, key) {
+      return !(key in data) || data[key] is bool;
+    }
+
+    // =========================================================================
+    // Validation Blueprints
+    // =========================================================================
+
+    function isValidUserAccount(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'isActive', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'role', 'employeeId', 'isActive',
+          'phone', 'department', 'designation', 'territory', 'fcmEnabled', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && isNonEmptyStr(data.email, 254)
+        && isNonEmptyStr(data.displayName, 120)
+        && data.role in ['Super Admin', 'Admin', 'Zonal Sales Manager (ZSM)', 'Regional Sales Manager (RSM)', 'Area Sales Manager (ASM)', 'Marketing Executive (ME)', 'Zonal Sales Manager', 'Area Sales Manager', 'RSM (Zonal Sales Manager)', 'Manager', 'Field Sales Employee', 'Stock Manager', 'Distributor', 'Pending']
+        && data.isActive is bool
+        && isOptStr(data, 'employeeId', 128)
+        && isOptStr(data, 'phone', 32)
+        && isOptStr(data, 'department', 80)
+        && isOptStr(data, 'designation', 80)
+        && isOptStr(data, 'territory', 120)
+        && isOptBool(data, 'fcmEnabled')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'grantedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'role', 'grantedAt', 'grantedBy'])
+        && isValidId(data.uid)
+        && isNonEmptyStr(data.email, 254)
+        && data.role in ['Super Admin', 'Admin']
+        && isOptStr(data, 'grantedBy', 128)
+        && data.grantedAt is timestamp;
+    }
+
+    function isValidInvite(data) {
+      return data.keys().hasAll(['email', 'role', 'fullName', 'department', 'createdAt'])
+        && data.keys().hasOnly(['email', 'role', 'employeeId', 'fullName', 'department', 'designation', 'territory', 'phone', 'createdAt'])
+        && isNonEmptyStr(data.email, 254)
+        && data.role in ['Super Admin', 'Admin', 'Zonal Sales Manager (ZSM)', 'Regional Sales Manager (RSM)', 'Area Sales Manager (ASM)', 'Marketing Executive (ME)', 'Zonal Sales Manager', 'Area Sales Manager', 'RSM (Zonal Sales Manager)', 'Manager', 'Field Sales Employee', 'Stock Manager', 'Distributor']
+        && isNonEmptyStr(data.fullName, 120)
+        && isNonEmptyStr(data.department, 80)
+        && isOptStr(data, 'employeeId', 128)
+        && isOptStr(data, 'designation', 80)
+        && isOptStr(data, 'territory', 120)
+        && isOptStr(data, 'phone', 32)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll(['employeeCode', 'fullName', 'email', 'role', 'department', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'uid', 'employeeCode', 'fullName', 'email', 'phone', 'role',
+          'department', 'designation', 'territory', 'assignedWarehouse',
+          'geofenceLat', 'geofenceLng', 'geofenceRadiusM', 'status', 'joiningDate',
+          'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isNonEmptyStr(data.employeeCode, 32)
+        && isNonEmptyStr(data.fullName, 120)
+        && isNonEmptyStr(data.email, 254)
+        && data.role in ['Super Admin', 'Admin', 'Zonal Sales Manager (ZSM)', 'Regional Sales Manager (RSM)', 'Area Sales Manager (ASM)', 'Marketing Executive (ME)', 'Zonal Sales Manager', 'Area Sales Manager', 'RSM (Zonal Sales Manager)', 'Manager', 'Field Sales Employee', 'Stock Manager', 'Distributor']
+        && isNonEmptyStr(data.department, 80)
+        && data.status in ['Active', 'Inactive', 'On Leave']
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'uid', 128)
+        && isOptStr(data, 'phone', 32)
+        && isOptStr(data, 'designation', 80)
+        && isOptStr(data, 'territory', 120)
+        && isOptStr(data, 'assignedWarehouse', 120)
+        && isOptNum(data, 'geofenceLat')
+        && isOptNum(data, 'geofenceLng')
+        && isOptNum(data, 'geofenceRadiusM')
+        && isOptStr(data, 'joiningDate', 32)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasAll(['userId', 'employeeName', 'date', 'workMode', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'employeeId', 'employeeName', 'department', 'date',
+          'workMode', 'status', 'checkInTime', 'checkOutTime',
+          'checkInLat', 'checkInLng', 'checkInAccuracy', 'checkOutLat', 'checkOutLng',
+          'workingMinutes', 'locationLabel', 'correctedBy', 'correctionReason',
+          'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.userId)
+        && isNonEmptyStr(data.employeeName, 120)
+        && isNonEmptyStr(data.date, 16)
+        && data.workMode in ['Office', 'Field']
+        && data.status in ['Present', 'Absent', 'Late', 'Half-day', 'Leave']
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'employeeId', 128)
+        && isOptStr(data, 'department', 80)
+        && isOptStr(data, 'checkInTime', 40)
+        && isOptStr(data, 'checkOutTime', 40)
+        && isOptNum(data, 'checkInLat')
+        && isOptNum(data, 'checkInLng')
+        && isOptNum(data, 'checkInAccuracy')
+        && isOptNum(data, 'checkOutLat')
+        && isOptNum(data, 'checkOutLng')
+        && isOptNum(data, 'workingMinutes')
+        && isOptStr(data, 'locationLabel', 200)
+        && isOptStr(data, 'correctedBy', 120)
+        && isOptStr(data, 'correctionReason', 300)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLeaveRequest(data) {
+      return data.keys().hasAll(['userId', 'employeeName', 'leaveType', 'startDate', 'endDate', 'reason', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'employeeName', 'leaveType', 'startDate', 'endDate',
+          'reason', 'status', 'reviewedBy', 'reviewRemarks', 'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.userId)
+        && isNonEmptyStr(data.employeeName, 120)
+        && data.leaveType in ['Casual', 'Sick', 'Earned', 'Field Off']
+        && isNonEmptyStr(data.startDate, 16)
+        && isNonEmptyStr(data.endDate, 16)
+        && isNonEmptyStr(data.reason, 500)
+        && data.status in ['Pending', 'Approved', 'Rejected']
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'reviewedBy', 120)
+        && isOptStr(data, 'reviewRemarks', 300)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLocationPing(data) {
+      return data.keys().hasAll(['userId', 'employeeName', 'lat', 'lng', 'accuracy', 'trackingActive', 'status', 'recordedAt'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'employeeName', 'territory', 'lat', 'lng', 'accuracy',
+          'trackingActive', 'status', 'customerId', 'customerName', 'withinGeofence',
+          'note', 'recordedAt', 'isDemo'
+        ])
+        && isValidId(data.userId)
+        && isNonEmptyStr(data.employeeName, 120)
+        && data.lat is number && data.lat >= -90 && data.lat <= 90
+        && data.lng is number && data.lng >= -180 && data.lng <= 180
+        && data.accuracy is number && data.accuracy >= 0
+        && data.trackingActive is bool
+        && data.status in ['On Duty', 'Customer Visit', 'In Transit', 'Checked Out']
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'territory', 120)
+        && isOptStr(data, 'customerId', 128)
+        && isOptStr(data, 'customerName', 140)
+        && isOptBool(data, 'withinGeofence')
+        && isOptStr(data, 'note', 240)
+        && isOptBool(data, 'isDemo')
+        && data.recordedAt is timestamp;
+    }
+
+    function isValidTask(data) {
+      return data.keys().hasAll(['title', 'assignedToUid', 'assignedToName', 'category', 'priority', 'startDate', 'deadline', 'status', 'createdByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'title', 'description', 'instructions', 'assignedToUid', 'assignedToName',
+          'teamName', 'category', 'priority', 'startDate', 'deadline', 'status',
+          'progressPct', 'completionProofUrl', 'completionNotes',
+          'extensionRequestedDate', 'extensionReason', 'adminRemarks', 'rejectionReason',
+          'createdByUid', 'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isNonEmptyStr(data.title, 180)
+        && isValidId(data.assignedToUid)
+        && isNonEmptyStr(data.assignedToName, 120)
+        && data.category in ['Sales', 'Customer Visit', 'Stock Management', 'Delivery', 'Collection', 'Reporting', 'General Work']
+        && data.priority in ['Low', 'Medium', 'High', 'Urgent']
+        && isNonEmptyStr(data.startDate, 32)
+        && isNonEmptyStr(data.deadline, 32)
+        && data.status in ['Assigned', 'Accepted', 'In Progress', 'Completed', 'Pending Approval', 'Approved', 'Rejected', 'Overdue', 'Cancelled']
+        && isValidId(data.createdByUid)
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'description', 1200)
+        && isOptStr(data, 'instructions', 1200)
+        && isOptStr(data, 'teamName', 100)
+        && isOptNum(data, 'progressPct')
+        && isOptStr(data, 'completionProofUrl', 600)
+        && isOptStr(data, 'completionNotes', 800)
+        && isOptStr(data, 'extensionRequestedDate', 32)
+        && isOptStr(data, 'extensionReason', 400)
+        && isOptStr(data, 'adminRemarks', 500)
+        && isOptStr(data, 'rejectionReason', 500)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTaskUpdate(data) {
+      return data.keys().hasAll(['taskId', 'authorUid', 'authorName', 'actionType', 'comment', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'taskId', 'authorUid', 'authorName', 'actionType',
+          'comment', 'progressPct', 'attachmentUrl', 'attachmentName', 'createdAt'
+        ])
+        && isValidId(data.taskId)
+        && isValidId(data.authorUid)
+        && isNonEmptyStr(data.authorName, 120)
+        && isNonEmptyStr(data.actionType, 60)
+        && isNonEmptyStr(data.comment, 800)
+        && isOptStr(data, 'id', 128)
+        && isOptNum(data, 'progressPct')
+        && isOptStr(data, 'attachmentUrl', 600)
+        && isOptStr(data, 'attachmentName', 160)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidActivityLog(data) {
+      return data.keys().hasAll(['userId', 'employeeName', 'action', 'details', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'employeeName', 'action', 'entityType',
+          'entityId', 'details', 'lat', 'lng', 'isDemo', 'createdAt'
+        ])
+        && isValidId(data.userId)
+        && isNonEmptyStr(data.employeeName, 120)
+        && isNonEmptyStr(data.action, 80)
+        && isNonEmptyStr(data.details, 500)
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'entityType', 60)
+        && isOptStr(data, 'entityId', 128)
+        && isOptNum(data, 'lat')
+        && isOptNum(data, 'lng')
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll([
+          'name', 'sku', 'category', 'brand', 'unit', 'batchNumber', 'mfgDate', 'expiryDate',
+          'purchasePrice', 'sellingPrice', 'openingStock', 'availableStock', 'minStockLevel',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'sku', 'category', 'brand', 'unit', 'batchNumber', 'mfgDate', 'expiryDate',
+          'purchasePrice', 'sellingPrice', 'openingStock', 'availableStock', 'minStockLevel',
+          'damagedStock', 'warehouse', 'imageUrl', 'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isNonEmptyStr(data.name, 160)
+        && isNonEmptyStr(data.sku, 64)
+        && isNonEmptyStr(data.category, 80)
+        && isNonEmptyStr(data.brand, 80)
+        && isNonEmptyStr(data.unit, 40)
+        && isNonEmptyStr(data.batchNumber, 64)
+        && isNonEmptyStr(data.mfgDate, 20)
+        && isNonEmptyStr(data.expiryDate, 20)
+        && data.purchasePrice is number && data.purchasePrice >= 0
+        && data.sellingPrice is number && data.sellingPrice >= 0
+        && data.openingStock is number && data.openingStock >= 0
+        && data.availableStock is number && data.availableStock >= 0
+        && data.minStockLevel is number && data.minStockLevel >= 0
+        && isOptStr(data, 'id', 128)
+        && isOptNum(data, 'damagedStock')
+        && isOptStr(data, 'warehouse', 120)
+        && isOptStr(data, 'imageUrl', 500)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStockMovement(data) {
+      return data.keys().hasAll(['productId', 'productName', 'batchNumber', 'movementType', 'quantity', 'status', 'performedByUid', 'performedByName', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'productId', 'productName', 'sku', 'batchNumber', 'movementType',
+          'quantity', 'previousStock', 'newStock', 'fromLocation', 'toLocation',
+          'targetUserId', 'targetName', 'status', 'reason', 'performedByUid',
+          'performedByName', 'approvedByUid', 'isDemo', 'createdAt'
+        ])
+        && isValidId(data.productId)
+        && isNonEmptyStr(data.productName, 160)
+        && isNonEmptyStr(data.batchNumber, 64)
+        && data.movementType in ['Stock In', 'Stock Out', 'Stock Transfer', 'Stock Return', 'Stock Adjustment', 'Damaged', 'Expired', 'Allocation']
+        && data.quantity is number && data.quantity > 0
+        && data.status in ['Approved', 'Pending Approval', 'Rejected']
+        && isValidId(data.performedByUid)
+        && isNonEmptyStr(data.performedByName, 120)
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'sku', 64)
+        && isOptNum(data, 'previousStock')
+        && isOptNum(data, 'newStock')
+        && isOptStr(data, 'fromLocation', 120)
+        && isOptStr(data, 'toLocation', 120)
+        && isOptStr(data, 'targetUserId', 128)
+        && isOptStr(data, 'targetName', 120)
+        && isOptStr(data, 'reason', 400)
+        && isOptStr(data, 'approvedByUid', 128)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp;
+    }
+
+    function isValidStockAllocation(data) {
+      return data.keys().hasAll(['productId', 'productName', 'batchNumber', 'holderUid', 'holderName', 'holderRole', 'allocatedQty', 'soldQty', 'remainingQty', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'productId', 'productName', 'sku', 'batchNumber', 'holderUid',
+          'holderName', 'holderRole', 'allocatedQty', 'soldQty', 'remainingQty', 'isDemo', 'updatedAt'
+        ])
+        && isValidId(data.productId)
+        && isNonEmptyStr(data.productName, 160)
+        && isNonEmptyStr(data.batchNumber, 64)
+        && isValidId(data.holderUid)
+        && isNonEmptyStr(data.holderName, 120)
+        && data.holderRole in ['Employee', 'Distributor']
+        && data.allocatedQty is number && data.allocatedQty >= 0
+        && data.soldQty is number && data.soldQty >= 0
+        && data.remainingQty is number && data.remainingQty >= 0
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'sku', 64)
+        && isOptBool(data, 'isDemo')
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['name', 'businessName', 'phone', 'city', 'category', 'assignedEmployeeUid', 'assignedEmployeeName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'name', 'businessName', 'phone', 'address', 'city', 'category',
+          'assignedEmployeeUid', 'assignedEmployeeName', 'lat', 'lng',
+          'outstandingBalance', 'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isNonEmptyStr(data.name, 120)
+        && isNonEmptyStr(data.businessName, 160)
+        && isNonEmptyStr(data.phone, 32)
+        && isNonEmptyStr(data.city, 100)
+        && data.category in ['Retail Pharmacy', 'Hospital', 'Clinic', 'Stockist', 'Wholesaler']
+        && isValidId(data.assignedEmployeeUid)
+        && isNonEmptyStr(data.assignedEmployeeName, 120)
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'address', 300)
+        && isOptNum(data, 'lat')
+        && isOptNum(data, 'lng')
+        && isOptNum(data, 'outstandingBalance')
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSalesOrder(data) {
+      return data.keys().hasAll([
+          'orderNumber', 'customerId', 'customerName', 'createdByUid', 'createdByName',
+          'items', 'totalAmount', 'paidAmount', 'pendingAmount', 'orderStatus', 'paymentStatus',
+          'orderType', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'orderNumber', 'customerId', 'customerName', 'customerBusiness',
+          'distributorUid', 'createdByUid', 'createdByName', 'items', 'subtotal',
+          'discountPct', 'discountAmount', 'totalAmount', 'paidAmount', 'pendingAmount',
+          'orderStatus', 'paymentStatus', 'orderType', 'notes', 'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isNonEmptyStr(data.orderNumber, 64)
+        && isValidId(data.customerId)
+        && isNonEmptyStr(data.customerName, 140)
+        && isValidId(data.createdByUid)
+        && isNonEmptyStr(data.createdByName, 120)
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 25
+        && data.items[0] is map
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.paidAmount is number && data.paidAmount >= 0
+        && data.pendingAmount is number && data.pendingAmount >= 0
+        && data.orderStatus in ['Pending', 'Approved', 'Packed', 'Dispatched', 'Delivered', 'Cancelled', 'Returned']
+        && data.paymentStatus in ['Paid', 'Partially Paid', 'Pending']
+        && data.orderType in ['Customer Sale', 'Distributor Purchase']
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'customerBusiness', 160)
+        && isOptStr(data, 'distributorUid', 128)
+        && isOptNum(data, 'subtotal')
+        && isOptNum(data, 'discountPct')
+        && isOptNum(data, 'discountAmount')
+        && isOptStr(data, 'notes', 500)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['orderId', 'orderNumber', 'payerName', 'amount', 'method', 'collectedByUid', 'collectedByName', 'paymentDate', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'orderId', 'orderNumber', 'payerUid', 'payerName', 'amount',
+          'method', 'referenceNo', 'collectedByUid', 'collectedByName', 'paymentDate',
+          'notes', 'isDemo', 'createdAt'
+        ])
+        && isValidId(data.orderId)
+        && isNonEmptyStr(data.orderNumber, 64)
+        && isNonEmptyStr(data.payerName, 140)
+        && data.amount is number && data.amount > 0
+        && data.method in ['Bank Transfer', 'UPI', 'Cheque', 'Cash', 'NEFT']
+        && isValidId(data.collectedByUid)
+        && isNonEmptyStr(data.collectedByName, 120)
+        && isNonEmptyStr(data.paymentDate, 32)
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'payerUid', 128)
+        && isOptStr(data, 'referenceNo', 80)
+        && isOptStr(data, 'notes', 300)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp;
+    }
+
+    function isValidDistributor(data) {
+      return data.keys().hasAll(['companyName', 'contactPerson', 'email', 'city', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'uid', 'companyName', 'contactPerson', 'email', 'phone',
+          'city', 'region', 'gstNumber', 'creditLimit', 'outstandingAmount',
+          'status', 'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isNonEmptyStr(data.companyName, 160)
+        && isNonEmptyStr(data.contactPerson, 120)
+        && isNonEmptyStr(data.email, 254)
+        && isNonEmptyStr(data.city, 100)
+        && data.status in ['Active', 'Suspended']
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'uid', 128)
+        && isOptStr(data, 'phone', 32)
+        && isOptStr(data, 'region', 100)
+        && isOptStr(data, 'gstNumber', 40)
+        && isOptNum(data, 'creditLimit')
+        && isOptNum(data, 'outstandingAmount')
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['recipientUid', 'title', 'message', 'category', 'severity', 'isRead', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'recipientUid', 'targetRole', 'title', 'message',
+          'category', 'severity', 'isRead', 'linkTab', 'createdAt'
+        ])
+        && isValidId(data.recipientUid)
+        && isNonEmptyStr(data.title, 160)
+        && isNonEmptyStr(data.message, 500)
+        && data.category in ['Task', 'Attendance', 'Inventory', 'Order', 'Payment', 'Leave', 'Expense', 'System']
+        && data.severity in ['info', 'warning', 'urgent']
+        && data.isRead is bool
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'targetRole', 64)
+        && isOptStr(data, 'linkTab', 64)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidCompanySettings(data) {
+      return data.keys().hasAll(['companyName', 'ownerUid', 'ownerEmail', 'officeLat', 'officeLng', 'officeRadiusM', 'updatedAt'])
+        && data.keys().hasOnly([
+          'companyName', 'ownerUid', 'ownerEmail', 'officeLat', 'officeLng', 'officeRadiusM',
+          'workStartTime', 'workEndTime', 'lowStockDefault', 'expiryAlertDays',
+          'currencySymbol', 'demoDataSeeded', 'updatedAt'
+        ])
+        && isNonEmptyStr(data.companyName, 160)
+        && isValidId(data.ownerUid)
+        && isNonEmptyStr(data.ownerEmail, 254)
+        && data.officeLat is number
+        && data.officeLng is number
+        && data.officeRadiusM is number && data.officeRadiusM > 0
+        && isOptStr(data, 'workStartTime', 16)
+        && isOptStr(data, 'workEndTime', 16)
+        && isOptNum(data, 'lowStockDefault')
+        && isOptNum(data, 'expiryAlertDays')
+        && isOptStr(data, 'currencySymbol', 12)
+        && isOptBool(data, 'demoDataSeeded')
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTourPlan(data) {
+      return data.keys().hasAll([
+          'employeeUid', 'employeeName', 'month', 'date', 'workType',
+          'placesToVisit', 'approvalStatus', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'employeeUid', 'employeeName', 'month', 'date', 'workType',
+          'headquarters', 'placesToVisit', 'routeZone', 'plannedCustomers',
+          'objective', 'overnightStay', 'approvalStatus', 'adminRemarks',
+          'createdByUid', 'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.employeeUid)
+        && isNonEmptyStr(data.employeeName, 120)
+        && isNonEmptyStr(data.month, 10)
+        && isNonEmptyStr(data.date, 16)
+        && data.workType in ['Field Visit', 'HQ / Office', 'Outstation', 'Transit', 'Stockist Meet', 'CME / Camp', 'Leave / Holiday']
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'headquarters', 120)
+        && isNonEmptyStr(data.placesToVisit, 300)
+        && isOptStr(data, 'routeZone', 120)
+        && isOptStr(data, 'plannedCustomers', 300)
+        && isOptStr(data, 'objective', 400)
+        && isOptBool(data, 'overnightStay')
+        && data.approvalStatus in ['Draft', 'Submitted', 'Approved', 'Rejected']
+        && isOptStr(data, 'adminRemarks', 300)
+        && isValidId(data.createdByUid)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDoctor(data) {
+      return data.keys().hasAll([
+          'name', 'specialty', 'clinicName', 'city',
+          'assignedEmployeeUid', 'assignedEmployeeName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'specialty', 'qualification', 'clinicName', 'phone',
+          'city', 'areaBeat', 'address', 'tier', 'assignedEmployeeUid', 'assignedEmployeeName',
+          'totalCalls', 'lastVisitedDate', 'lastCallOutcome', 'lastDoctorRemark',
+          'lastProductsShown', 'lastCallLat', 'lastCallLng', 'lastCallLocation',
+          'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isNonEmptyStr(data.name, 120)
+        && isNonEmptyStr(data.specialty, 80)
+        && isNonEmptyStr(data.clinicName, 160)
+        && isNonEmptyStr(data.city, 100)
+        && isValidId(data.assignedEmployeeUid)
+        && isNonEmptyStr(data.assignedEmployeeName, 120)
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'qualification', 60)
+        && isOptStr(data, 'phone', 32)
+        && isOptStr(data, 'areaBeat', 120)
+        && isOptStr(data, 'address', 250)
+        && (!('tier' in data) || data.tier in ['Core A+', 'Class A', 'Class B'])
+        && isOptNum(data, 'totalCalls')
+        && isOptStr(data, 'lastVisitedDate', 20)
+        && (!('lastCallOutcome' in data) || data.lastCallOutcome in ['Interested', 'Prescribing', 'Follow-up Required', 'Sample Requested', 'Not Available', 'Declined'])
+        && isOptStr(data, 'lastDoctorRemark', 600)
+        && isOptStr(data, 'lastProductsShown', 300)
+        && (!('lastCallLat' in data) || (data.lastCallLat is number && data.lastCallLat >= -90 && data.lastCallLat <= 90))
+        && (!('lastCallLng' in data) || (data.lastCallLng is number && data.lastCallLng >= -180 && data.lastCallLng <= 180))
+        && isOptStr(data, 'lastCallLocation', 200)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDoctorCall(data) {
+      return data.keys().hasAll([
+          'doctorId', 'doctorName', 'employeeUid', 'employeeName',
+          'callDate', 'productsShown', 'callOutcome', 'doctorRemark', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'doctorId', 'doctorName', 'clinicName', 'specialty', 'areaBeat',
+          'employeeUid', 'employeeName', 'callDate', 'productsShown', 'samplesGiven',
+          'callOutcome', 'doctorRemark', 'nextFollowUpDate', 'lat', 'lng',
+          'accuracy', 'locationName', 'isDemo', 'createdAt'
+        ])
+        && isValidId(data.doctorId)
+        && isNonEmptyStr(data.doctorName, 120)
+        && isValidId(data.employeeUid)
+        && isNonEmptyStr(data.employeeName, 120)
+        && isNonEmptyStr(data.callDate, 16)
+        && data.productsShown is list
+        && data.productsShown.size() >= 1
+        && data.productsShown.size() <= 20
+        && data.productsShown[0] is string
+        && data.callOutcome in ['Interested', 'Prescribing', 'Follow-up Required', 'Sample Requested', 'Not Available', 'Declined']
+        && isNonEmptyStr(data.doctorRemark, 600)
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'clinicName', 160)
+        && isOptStr(data, 'specialty', 80)
+        && isOptStr(data, 'areaBeat', 120)
+        && isOptStr(data, 'samplesGiven', 240)
+        && isOptStr(data, 'nextFollowUpDate', 20)
+        && (!('lat' in data) || (data.lat is number && data.lat >= -90 && data.lat <= 90))
+        && (!('lng' in data) || (data.lng is number && data.lng >= -180 && data.lng <= 180))
+        && (!('accuracy' in data) || (data.accuracy is number && data.accuracy >= 0))
+        && isOptStr(data, 'locationName', 200)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp;
+    }
+
+    function isValidBiometricCredential(data) {
+      return data.keys().hasAll([
+          'credentialId', 'userId', 'email', 'displayName',
+          'deviceLabel', 'isActive', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'credentialId', 'userId', 'email', 'displayName',
+          'deviceLabel', 'isActive', 'lastUsedAt', 'createdAt'
+        ])
+        && isValidId(data.credentialId)
+        && isValidId(data.userId)
+        && isNonEmptyStr(data.email, 254)
+        && isNonEmptyStr(data.displayName, 120)
+        && isNonEmptyStr(data.deviceLabel, 120)
+        && data.isActive is bool
+        && isOptStr(data, 'id', 128)
+        && (!('lastUsedAt' in data) || data.lastUsedAt is timestamp)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll([
+          'userId', 'employeeName', 'expenseDate', 'category',
+          'amount', 'description', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'userId', 'employeeName', 'department', 'territory',
+          'expenseDate', 'category', 'amount', 'travelFrom', 'travelTo',
+          'distanceKm', 'description', 'receiptUrl', 'receiptPath',
+          'status', 'reviewedByUid', 'reviewedByName', 'reviewRemarks',
+          'reimbursedRef', 'isDemo', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.userId)
+        && isNonEmptyStr(data.employeeName, 120)
+        && isNonEmptyStr(data.expenseDate, 16)
+        && data.category in [
+          'Travel / Fuel', 'Daily Allowance', 'Meals & Hospitality',
+          'Lodging / Hotel', 'Doctor Visit / CME', 'Courier / Misc'
+        ]
+        && data.amount is number && data.amount > 0 && data.amount <= 1000000
+        && isNonEmptyStr(data.description, 500)
+        && data.status in ['Draft', 'Pending Approval', 'Approved', 'Rejected', 'Reimbursed']
+        && isOptStr(data, 'id', 128)
+        && isOptStr(data, 'department', 80)
+        && isOptStr(data, 'territory', 120)
+        && isOptStr(data, 'travelFrom', 120)
+        && isOptStr(data, 'travelTo', 120)
+        && (!('distanceKm' in data) || (data.distanceKm is number && data.distanceKm >= 0 && data.distanceKm <= 10000))
+        && isOptStr(data, 'receiptUrl', 1000)
+        && isOptStr(data, 'receiptPath', 240)
+        && isOptStr(data, 'reviewedByUid', 128)
+        && isOptStr(data, 'reviewedByName', 120)
+        && isOptStr(data, 'reviewRemarks', 400)
+        && isOptStr(data, 'reimbursedRef', 80)
+        && isOptBool(data, 'isDemo')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection Rules
+    // =========================================================================
+
+    match /test/{docId} {
+      allow get: if isValidId(docId) && isSignedIn();
+    }
+
+    // 1. Settings & First-Admin Bootstrap Lock
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId) && isSignedIn();
+      allow list: if isVerifiedUser();
+      allow create: if isValidId(settingId) && isVerifiedUser()
+        && isValidCompanySettings(incoming())
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            settingId == 'company'
+            && !exists(/databases/$(database)/documents/settings/company)
+            && incoming().ownerUid == request.auth.uid
+            && existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+          )
+        );
+      allow update: if isValidId(settingId) && isAdmin()
+        && isValidCompanySettings(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // 2. Admins Registry
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && isVerifiedUser() && (userId == request.auth.uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isVerifiedUser()
+        && isValidAdminRecord(incoming())
+        && incoming().uid == userId
+        && incoming().grantedAt == request.time
+        && (
+          isAdmin() ||
+          (userId == request.auth.uid && isBootstrapOwner()) ||
+          (
+            userId == request.auth.uid
+            && !exists(/databases/$(database)/documents/settings/company)
+            && existsAfter(/databases/$(database)/documents/settings/company)
+          )
+        );
+      allow update: if isValidId(userId) && isAdmin()
+        && isValidAdminRecord(incoming())
+        && incoming().uid == existing().uid;
+      allow delete: if isValidId(userId) && isAdmin() && userId != request.auth.uid;
+    }
+
+    // 3. Users (PII isolated to owner or Admin/Manager; invited roles verified server-side)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isVerifiedUser() && (userId == request.auth.uid || isManagerOrAdmin());
+      allow list: if isVerifiedUser() && (resource.data.uid == request.auth.uid || isManagerOrAdmin());
+      allow create: if isValidId(userId) && isVerifiedUser()
+        && isValidUserAccount(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            userId == request.auth.uid
+            && incoming().uid == request.auth.uid
+            && (
+              (isBootstrapOwner() && incoming().role == 'Super Admin') ||
+              (
+                !exists(/databases/$(database)/documents/settings/company)
+                && existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+                && incoming().role == 'Super Admin'
+              ) ||
+              (
+                exists(/databases/$(database)/documents/invites/$(emailToKey(request.auth.token.email)))
+                && incoming().role == get(/databases/$(database)/documents/invites/$(emailToKey(request.auth.token.email))).data.role
+                && incoming().role != 'Super Admin'
+                && incoming().role != 'Admin'
+                && incoming().isActive == true
+              ) ||
+              (
+                incoming().role == 'Pending'
+                && incoming().isActive == true
+              )
+            )
+          )
+        );
+      allow update: if isValidId(userId) && isVerifiedUser()
+        && isValidUserAccount(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            userId == request.auth.uid
+            && incoming().role == existing().role
+            && incoming().isActive == existing().isActive
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone', 'fcmEnabled', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // 4. Invites (Pre-assigned roles by email key, writable only by Admin)
+    match /invites/{emailKey} {
+      allow get: if isValidId(emailKey) && isVerifiedUser();
+      allow list: if isManagerOrAdmin() || (isVerifiedUser() && resource.data.email == request.auth.token.email);
+      allow create, update: if isValidId(emailKey) && isAdmin()
+        && isValidInvite(incoming())
+        && incoming().createdAt == request.time;
+      allow delete: if isValidId(emailKey) && isAdmin();
+    }
+
+    // 5. Employees (PII isolated)
+    match /employees/{employeeId} {
+      allow get: if isValidId(employeeId) && isVerifiedUser()
+        && (isManagerOrAdmin() || existing().uid == request.auth.uid || existing().email == request.auth.token.email);
+      allow list: if isVerifiedUser()
+        && (isManagerOrAdmin() || resource.data.uid == request.auth.uid || resource.data.email == request.auth.token.email);
+      allow create: if isValidId(employeeId) && isAdmin()
+        && isValidEmployee(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(employeeId) && isVerifiedUser()
+        && isValidEmployee(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().email == request.auth.token.email
+            && incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'updatedAt'])
+            && incoming().uid == request.auth.uid
+          )
+        );
+      allow delete: if isValidId(employeeId) && isAdmin();
+    }
+
+    // 6. Attendance
+    match /attendance/{attendanceId} {
+      allow get: if isValidId(attendanceId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().userId == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isValidId(attendanceId) && isActiveUser()
+        && isValidAttendance(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (isManagerOrAdmin() || incoming().userId == request.auth.uid);
+      allow update: if isValidId(attendanceId) && isActiveUser()
+        && isValidAttendance(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isManagerOrAdmin() ||
+          (
+            existing().userId == request.auth.uid
+            && !('correctedBy' in incoming())
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'checkOutTime', 'checkOutLat', 'checkOutLng', 'workingMinutes', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(attendanceId) && isAdmin();
+    }
+
+    // 7. Leave Requests
+    match /leaveRequests/{leaveId} {
+      allow get: if isValidId(leaveId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().userId == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isValidId(leaveId) && isActiveUser()
+        && isValidLeaveRequest(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'Pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(leaveId) && isActiveUser()
+        && isValidLeaveRequest(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && isManagerOrAdmin()
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'reviewRemarks', 'updatedAt']);
+      allow delete: if isValidId(leaveId) && isAdmin();
+    }
+
+    // 8. GPS Locations
+    match /locations/{locationId} {
+      allow get: if isValidId(locationId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().userId == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isValidId(locationId) && isActiveUser()
+        && isValidLocationPing(incoming())
+        && incoming().recordedAt == request.time
+        && (isAdmin() || incoming().userId == request.auth.uid);
+      allow update, delete: if isValidId(locationId) && isAdmin();
+    }
+
+    // 9. Tasks
+    match /tasks/{taskId} {
+      allow get: if isValidId(taskId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().assignedToUid == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.assignedToUid == request.auth.uid);
+      allow create: if isValidId(taskId) && isManagerOrAdmin()
+        && isValidTask(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(taskId) && isActiveUser()
+        && isValidTask(incoming())
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isManagerOrAdmin() ||
+          (
+            existing().assignedToUid == request.auth.uid
+            && !(existing().status in ['Approved', 'Cancelled'])
+            && incoming().status in ['Accepted', 'In Progress', 'Completed', 'Pending Approval']
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'progressPct', 'completionProofUrl', 'completionNotes',
+              'extensionRequestedDate', 'extensionReason', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(taskId) && isAdmin();
+    }
+
+    // 10. Task Updates
+    match /taskUpdates/{updateId} {
+      allow get: if isValidId(updateId) && isActiveUser()
+        && (
+          isManagerOrAdmin() ||
+          get(/databases/$(database)/documents/tasks/$(existing().taskId)).data.assignedToUid == request.auth.uid
+        );
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.authorUid == request.auth.uid);
+      allow create: if isValidId(updateId) && isActiveUser()
+        && isValidTaskUpdate(incoming())
+        && incoming().authorUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/tasks/$(incoming().taskId));
+      allow update, delete: if isValidId(updateId) && isAdmin();
+    }
+
+    // 11. Activity Logs
+    match /activityLogs/{logId} {
+      allow get: if isValidId(logId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().userId == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isValidId(logId) && isActiveUser()
+        && isValidActivityLog(incoming())
+        && incoming().createdAt == request.time
+        && (isAdmin() || incoming().userId == request.auth.uid);
+      allow update, delete: if isValidId(logId) && isAdmin();
+    }
+
+    // 12. Products & Inventory
+    match /products/{productId} {
+      allow get: if isValidId(productId) && isActiveUser();
+      allow list: if isActiveUser();
+      allow create: if isValidId(productId) && isStockAuthorized()
+        && isValidProduct(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(productId) && isStockAuthorized()
+        && isValidProduct(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if isValidId(productId) && isAdmin();
+    }
+
+    // 13. Stock Movements
+    match /stockMovements/{movementId} {
+      allow get: if isValidId(movementId) && isActiveUser()
+        && (isStockAuthorized() || existing().performedByUid == request.auth.uid || existing().targetUserId == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isStockAuthorized() || resource.data.performedByUid == request.auth.uid || resource.data.targetUserId == request.auth.uid);
+      allow create: if isValidId(movementId) && isActiveUser()
+        && isValidStockMovement(incoming())
+        && incoming().performedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && (isStockAuthorized() || incoming().status == 'Pending Approval');
+      allow update: if isValidId(movementId) && isStockAuthorized()
+        && isValidStockMovement(incoming())
+        && incoming().performedByUid == existing().performedByUid
+        && incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(movementId) && isAdmin();
+    }
+
+    // 14. Stock Allocations (split create & update cleanly)
+    match /stockAllocations/{allocationId} {
+      allow get: if isValidId(allocationId) && isActiveUser()
+        && (isStockAuthorized() || existing().holderUid == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isStockAuthorized() || resource.data.holderUid == request.auth.uid);
+      allow create: if isValidId(allocationId) && isStockAuthorized()
+        && isValidStockAllocation(incoming())
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(allocationId) && isActiveUser()
+        && isValidStockAllocation(incoming())
+        && incoming().updatedAt == request.time
+        && (
+          isStockAuthorized() ||
+          (
+            existing().holderUid == request.auth.uid
+            && incoming().holderUid == existing().holderUid
+            && incoming().allocatedQty == existing().allocatedQty
+            && incoming().diff(existing()).affectedKeys().hasOnly(['soldQty', 'remainingQty', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(allocationId) && isAdmin();
+    }
+
+    // 15. Customers
+    match /customers/{customerId} {
+      allow get: if isValidId(customerId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().assignedEmployeeUid == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.assignedEmployeeUid == request.auth.uid);
+      allow create: if isValidId(customerId) && isActiveUser()
+        && isValidCustomer(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (isManagerOrAdmin() || incoming().assignedEmployeeUid == request.auth.uid);
+      allow update: if isValidId(customerId) && isActiveUser()
+        && isValidCustomer(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (isManagerOrAdmin() || existing().assignedEmployeeUid == request.auth.uid);
+      allow delete: if isValidId(customerId) && isAdmin();
+    }
+
+    // 16. Sales Orders
+    match /salesOrders/{orderId} {
+      allow get: if isValidId(orderId) && isActiveUser()
+        && (isManagerOrAdmin() || isStockAuthorized() || existing().createdByUid == request.auth.uid || existing().distributorUid == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || isStockAuthorized() || resource.data.createdByUid == request.auth.uid || resource.data.distributorUid == request.auth.uid);
+      allow create: if isValidId(orderId) && isActiveUser()
+        && isValidSalesOrder(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (isManagerOrAdmin() || incoming().orderStatus == 'Pending');
+      allow update: if isValidId(orderId) && isActiveUser()
+        && isValidSalesOrder(incoming())
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isManagerOrAdmin() ||
+          isStockAuthorized() ||
+          (
+            existing().createdByUid == request.auth.uid
+            && !(existing().orderStatus in ['Delivered', 'Cancelled'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['paidAmount', 'pendingAmount', 'paymentStatus', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(orderId) && isAdmin();
+    }
+
+    // 17. Payments
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().collectedByUid == request.auth.uid || existing().payerUid == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.collectedByUid == request.auth.uid || resource.data.payerUid == request.auth.uid);
+      allow create: if isValidId(paymentId) && isActiveUser()
+        && isValidPayment(incoming())
+        && incoming().collectedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/salesOrders/$(incoming().orderId));
+      allow update, delete: if isValidId(paymentId) && isAdmin();
+    }
+
+    // 18. Distributors
+    match /distributors/{distributorId} {
+      allow get: if isValidId(distributorId) && isActiveUser()
+        && (isManagerOrAdmin() || isStockAuthorized() || existing().uid == request.auth.uid || existing().email == request.auth.token.email);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || isStockAuthorized() || resource.data.uid == request.auth.uid || resource.data.email == request.auth.token.email);
+      allow create: if isValidId(distributorId) && isAdmin()
+        && isValidDistributor(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(distributorId) && isManagerOrAdmin()
+        && isValidDistributor(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+      allow delete: if isValidId(distributorId) && isAdmin();
+    }
+
+    // 19. Notifications
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().recipientUid == request.auth.uid || existing().recipientUid == 'ALL');
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.recipientUid == request.auth.uid || resource.data.recipientUid == 'ALL');
+      allow create: if isValidId(notificationId) && isActiveUser()
+        && isValidNotification(incoming())
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(notificationId) && isActiveUser()
+        && isValidNotification(incoming())
+        && incoming().createdAt == existing().createdAt
+        && (isManagerOrAdmin() || existing().recipientUid == request.auth.uid)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['isRead']);
+      allow delete: if isValidId(notificationId) && isAdmin();
+    }
+
+    // 20. Monthly Tour Plans
+    match /tourPlans/{planId} {
+      allow get: if isValidId(planId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().employeeUid == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.employeeUid == request.auth.uid);
+      allow create: if isValidId(planId) && isActiveUser()
+        && isValidTourPlan(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isManagerOrAdmin() ||
+          (
+            incoming().employeeUid == request.auth.uid
+            && incoming().approvalStatus in ['Draft', 'Submitted']
+          )
+        );
+      allow update: if isValidId(planId) && isActiveUser()
+        && isValidTourPlan(incoming())
+        && incoming().employeeUid == existing().employeeUid
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isManagerOrAdmin() ||
+          (
+            existing().employeeUid == request.auth.uid
+            && existing().approvalStatus != 'Approved'
+            && incoming().approvalStatus in ['Draft', 'Submitted']
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'workType', 'headquarters', 'placesToVisit', 'routeZone',
+              'plannedCustomers', 'objective', 'overnightStay', 'approvalStatus', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(planId) && isAdmin();
+    }
+
+    // 21. Doctors Directory
+    match /doctors/{doctorId} {
+      allow get: if isValidId(doctorId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().assignedEmployeeUid == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.assignedEmployeeUid == request.auth.uid);
+      allow create: if isValidId(doctorId) && isActiveUser()
+        && isValidDoctor(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (isManagerOrAdmin() || incoming().assignedEmployeeUid == request.auth.uid);
+      allow update: if isValidId(doctorId) && isActiveUser()
+        && isValidDoctor(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isManagerOrAdmin() ||
+          (
+            existing().assignedEmployeeUid == request.auth.uid
+            && incoming().assignedEmployeeUid == existing().assignedEmployeeUid
+          )
+        );
+      allow delete: if isValidId(doctorId) && isAdmin();
+    }
+
+    // 22. Doctor Detailing Calls & Remarks
+    match /doctorCalls/{callId} {
+      allow get: if isValidId(callId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().employeeUid == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.employeeUid == request.auth.uid);
+      allow create: if isValidId(callId) && isActiveUser()
+        && isValidDoctorCall(incoming())
+        && incoming().employeeUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/doctors/$(incoming().doctorId));
+      allow update: if isValidId(callId) && isActiveUser()
+        && isValidDoctorCall(incoming())
+        && incoming().doctorId == existing().doctorId
+        && incoming().employeeUid == existing().employeeUid
+        && incoming().createdAt == existing().createdAt
+        && (
+          isManagerOrAdmin() ||
+          (
+            existing().employeeUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['lat', 'lng', 'accuracy', 'locationName'])
+          )
+        );
+      allow delete: if isValidId(callId) && isAdmin();
+    }
+
+    // 23. Biometric Device Credentials (WebAuthn Passkey Registry)
+    match /biometricCredentials/{credId} {
+      allow get: if isValidId(credId) && isActiveUser()
+        && (isAdmin() || existing().userId == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isValidId(credId) && isActiveUser()
+        && isValidBiometricCredential(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().credentialId == credId
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(credId) && isActiveUser()
+        && isValidBiometricCredential(incoming())
+        && incoming().userId == existing().userId
+        && incoming().credentialId == existing().credentialId
+        && incoming().createdAt == existing().createdAt
+        && (
+          isAdmin() ||
+          (
+            existing().userId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['isActive', 'lastUsedAt', 'deviceLabel'])
+          )
+        );
+      allow delete: if isValidId(credId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    // 24. Field Sales Travel & Daily Expense Claims
+    match /expenses/{expenseId} {
+      allow get: if isValidId(expenseId) && isActiveUser()
+        && (isManagerOrAdmin() || existing().userId == request.auth.uid);
+      allow list: if isActiveUser()
+        && (isManagerOrAdmin() || resource.data.userId == request.auth.uid);
+      allow create: if isValidId(expenseId) && isActiveUser()
+        && isValidExpense(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status in ['Draft', 'Pending Approval']
+        && !('reviewedByUid' in incoming())
+        && !('reviewedByName' in incoming())
+        && !('reviewRemarks' in incoming())
+        && !('reimbursedRef' in incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(expenseId) && isActiveUser()
+        && isValidExpense(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isManagerOrAdmin() ||
+          (
+            existing().userId == request.auth.uid
+            && existing().status in ['Draft', 'Rejected']
+            && incoming().status in ['Draft', 'Pending Approval']
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'expenseDate', 'category', 'amount', 'travelFrom', 'travelTo',
+              'distanceKm', 'description', 'receiptUrl', 'receiptPath',
+              'status', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(expenseId) && isActiveUser()
+        && (
+          isAdmin() ||
+          (existing().userId == request.auth.uid && existing().status in ['Draft', 'Rejected'])
+        );
+    }
+  }
+}
