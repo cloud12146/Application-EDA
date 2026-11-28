@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { doc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import {
   AlertTriangle,
@@ -145,7 +145,41 @@ export const LocationTrackingModule: React.FC<LocationTrackingModuleProps> = ({
   const geofenceLng = myEmployee?.geofenceLng ?? settings?.officeLng ?? 72.8777;
   const geofenceRadius = myEmployee?.geofenceRadiusM ?? settings?.officeRadiusM ?? 500;
 
-  const refreshTileStats = async (force = false) => {
+  const geofenceCenter = useMemo(
+    () => ({
+      lat: geofenceLat,
+      lng: geofenceLng,
+      radiusM: geofenceRadius,
+      label: isAdminView ? 'Corporate HQ Geofence' : 'My Assigned Geofence',
+    }),
+    [geofenceLat, geofenceLng, geofenceRadius, isAdminView]
+  );
+
+  const handleClusterStatsChange = useCallback((next: MapClusterStats) => {
+    setClusterStats((prev) => {
+      if (
+        prev &&
+        prev.totalEmployees === next.totalEmployees &&
+        prev.visibleMarkerCount === next.visibleMarkerCount &&
+        prev.clusterCount === next.clusterCount &&
+        prev.zoom === next.zoom &&
+        prev.isClustered === next.isClustered
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSelectCall = useCallback((callId: string) => {
+    setFocusedCallId(callId);
+  }, []);
+
+  const handleSelectEmployee = useCallback((uid: string) => {
+    setFocusedEmployeeUid(uid);
+  }, []);
+
+  const refreshTileStats = useCallback(async (force = false) => {
     const now = Date.now();
     if (!force && now - lastStatRefreshRef.current < 1500) return;
     lastStatRefreshRef.current = now;
@@ -153,7 +187,11 @@ export const LocationTrackingModule: React.FC<LocationTrackingModuleProps> = ({
     setTileCacheSupported(stats.supported);
     setCachedTileCount(stats.count);
     setTileMeta(stats.meta);
-  };
+  }, []);
+
+  const handleTileCached = useCallback(() => {
+    void refreshTileStats(false);
+  }, [refreshTileStats]);
 
   useEffect(() => {
     refreshTileStats(true);
@@ -1152,24 +1190,17 @@ export const LocationTrackingModule: React.FC<LocationTrackingModuleProps> = ({
             }
             customers={customers}
             doctorCalls={mapViewMode === 'visit-history' ? employeeHistoryCalls : doctorCalls}
-            geofenceCenter={{
-              lat: geofenceLat,
-              lng: geofenceLng,
-              radiusM: geofenceRadius,
-              label: isAdminView ? 'Corporate HQ Geofence' : 'My Assigned Geofence',
-            }}
+            geofenceCenter={geofenceCenter}
             routeUserId={mapViewMode === 'live' ? routeUserId : undefined}
             visitHistoryMode={mapViewMode === 'visit-history'}
             clusterEmployees={clusterEmployees}
             focusedCallId={focusedCallId}
             focusedEmployeeUid={mapViewMode === 'live' ? focusedEmployeeUid : null}
             focusTick={focusTick}
-            onSelectCall={(callId) => setFocusedCallId(callId)}
-            onSelectEmployee={(uid) => {
-              setFocusedEmployeeUid(uid);
-            }}
-            onClusterStatsChange={setClusterStats}
-            onTileCached={() => refreshTileStats(false)}
+            onSelectCall={handleSelectCall}
+            onSelectEmployee={handleSelectEmployee}
+            onClusterStatsChange={handleClusterStatsChange}
+            onTileCached={handleTileCached}
           />
 
           {/* Map Legend */}

@@ -52,11 +52,13 @@ import {
   loadFormDraft,
   saveFormDraft,
 } from '../lib/formDrafts';
+import { getRoleDisplayLabel } from '../lib/roles';
 import {
   Employee,
   ExpenseCategory,
   ExpenseClaim,
   ExpenseStatus,
+  ExpenseWorkingType,
   UserAccount,
 } from '../types/erp';
 
@@ -74,6 +76,15 @@ const EXPENSE_CATEGORIES: ExpenseCategory[] = [
   'Lodging / Hotel',
   'Doctor Visit / CME',
   'Courier / Misc',
+];
+
+const WORKING_TYPES: ExpenseWorkingType[] = [
+  'HQ Working',
+  'Ex-HQ Working',
+  'Outstation',
+  'Transit',
+  'Field Camp / CME',
+  'Office / Admin',
 ];
 
 const EXPENSE_STATUSES: ExpenseStatus[] = [
@@ -95,6 +106,11 @@ const STATUS_BADGE: Record<ExpenseStatus, string> = {
 interface ExpenseFormDraft {
   expenseDate: string;
   category: ExpenseCategory;
+  workingType: ExpenseWorkingType;
+  patchArea: string;
+  dailyAllowance: string;
+  travellingAllowance: string;
+  otherExpense: string;
   amount: string;
   travelFrom: string;
   travelTo: string;
@@ -106,6 +122,10 @@ interface ExpenseFormDraft {
 function hasExpenseDraftContent(d: ExpenseFormDraft): boolean {
   return Boolean(
     d.amount.trim() ||
+      (d.dailyAllowance || '').trim() ||
+      (d.travellingAllowance || '').trim() ||
+      (d.otherExpense || '').trim() ||
+      (d.patchArea || '').trim() ||
       d.travelFrom.trim() ||
       d.travelTo.trim() ||
       d.distanceKm.trim() ||
@@ -168,11 +188,34 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
   expenses,
   employees,
 }) => {
+  const isSuperAdmin = currentUser.role === 'Super Admin';
+  const isExecutiveRole =
+    currentUser.role === 'Super Admin' || currentUser.role === 'Admin';
+  // All posts except Super Admin & Admin get Working/Patch + Daily Allowance (₹) + Travelling Allowance (₹) self-entry
+  const allowSelfAllowanceEntry = !isExecutiveRole;
+
+  const myEmployee = useMemo(
+    () =>
+      employees.find(
+        (e) =>
+          e.uid === currentUser.uid ||
+          e.email.toLowerCase() === currentUser.email.toLowerCase()
+      ),
+    [employees, currentUser.uid, currentUser.email]
+  );
+
+  const myDesignation =
+    myEmployee?.designation ||
+    currentUser.designation ||
+    getRoleDisplayLabel(currentUser.role);
+  const defaultPatchArea = myEmployee?.territory || currentUser.territory || '';
+
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | ExpenseStatus>('ALL');
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | ExpenseCategory>('ALL');
   const [monthFilter, setMonthFilter] = useState<string>(currentMonthKey());
   const [employeeFilter, setEmployeeFilter] = useState<string>('ALL');
+  const [scopeTab, setScopeTab] = useState<'ALL' | 'MINE'>('ALL');
 
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -182,6 +225,11 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
   const [editingClaim, setEditingClaim] = useState<ExpenseClaim | null>(null);
   const [expenseDate, setExpenseDate] = useState(todayIsoDate());
   const [category, setCategory] = useState<ExpenseCategory>('Travel / Fuel');
+  const [workingType, setWorkingType] = useState<ExpenseWorkingType>('HQ Working');
+  const [patchArea, setPatchArea] = useState(defaultPatchArea);
+  const [dailyAllowance, setDailyAllowance] = useState('');
+  const [travellingAllowance, setTravellingAllowance] = useState('');
+  const [otherExpense, setOtherExpense] = useState('');
   const [amount, setAmount] = useState('');
   const [travelFrom, setTravelFrom] = useState('');
   const [travelTo, setTravelTo] = useState('');
@@ -211,7 +259,7 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     category: ExpenseCategory;
   } | null>(null);
 
-  // Admin review / lightbox state
+  // Super Admin review / lightbox state
   const [inspectClaim, setInspectClaim] = useState<ExpenseClaim | null>(null);
   const [reviewRemarks, setReviewRemarks] = useState('');
   const [reimburseRef, setReimburseRef] = useState('');
@@ -265,9 +313,21 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     refreshSavedNewDraftBanner();
   }, [currentUser.uid]);
 
+  const computeTotalFromBreakdown = (da: string, ta: string, other: string): number => {
+    const d = Number(da) || 0;
+    const t = Number(ta) || 0;
+    const o = Number(other) || 0;
+    return Math.round((d + t + o) * 100) / 100;
+  };
+
   const applyDraftToForm = (draft: ExpenseFormDraft, savedAt: number) => {
     setExpenseDate(draft.expenseDate || todayIsoDate());
     setCategory(draft.category || 'Travel / Fuel');
+    setWorkingType(draft.workingType || 'HQ Working');
+    setPatchArea(draft.patchArea ?? defaultPatchArea);
+    setDailyAllowance(draft.dailyAllowance || '');
+    setTravellingAllowance(draft.travellingAllowance || '');
+    setOtherExpense(draft.otherExpense || '');
     setAmount(draft.amount || '');
     setTravelFrom(draft.travelFrom || '');
     setTravelTo(draft.travelTo || '');
@@ -285,6 +345,58 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     setDraftSavedAt(savedAt);
   };
 
+  const populateFormFromClaim = (claim: ExpenseClaim) => {
+    setExpenseDate(claim.expenseDate);
+    setCategory(claim.category);
+    setWorkingType(claim.workingType || 'HQ Working');
+    setPatchArea(claim.patchArea || claim.territory || defaultPatchArea);
+
+    const hasStructured =
+      typeof claim.dailyAllowance === 'number' ||
+      typeof claim.travellingAllowance === 'number' ||
+      typeof claim.otherExpense === 'number';
+
+    if (hasStructured) {
+      setDailyAllowance(
+        typeof claim.dailyAllowance === 'number' && claim.dailyAllowance > 0
+          ? String(claim.dailyAllowance)
+          : ''
+      );
+      setTravellingAllowance(
+        typeof claim.travellingAllowance === 'number' && claim.travellingAllowance > 0
+          ? String(claim.travellingAllowance)
+          : ''
+      );
+      setOtherExpense(
+        typeof claim.otherExpense === 'number' && claim.otherExpense > 0
+          ? String(claim.otherExpense)
+          : ''
+      );
+    } else if (claim.category === 'Daily Allowance') {
+      setDailyAllowance(String(claim.amount));
+      setTravellingAllowance('');
+      setOtherExpense('');
+    } else if (claim.category === 'Travel / Fuel') {
+      setDailyAllowance('');
+      setTravellingAllowance(String(claim.amount));
+      setOtherExpense('');
+    } else {
+      setDailyAllowance('');
+      setTravellingAllowance('');
+      setOtherExpense(String(claim.amount));
+    }
+
+    setAmount(String(claim.amount));
+    setTravelFrom(claim.travelFrom || '');
+    setTravelTo(claim.travelTo || '');
+    setDistanceKm(
+      typeof claim.distanceKm === 'number' && claim.distanceKm > 0
+        ? String(claim.distanceKm)
+        : ''
+    );
+    setDescription(claim.description);
+  };
+
   const openCreateModal = () => {
     stopCamera();
     clearPreviewBlob();
@@ -300,6 +412,11 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     } else {
       setExpenseDate(todayIsoDate());
       setCategory('Travel / Fuel');
+      setWorkingType('HQ Working');
+      setPatchArea(defaultPatchArea);
+      setDailyAllowance('');
+      setTravellingAllowance('');
+      setOtherExpense('');
       setAmount('');
       setTravelFrom('');
       setTravelTo('');
@@ -326,17 +443,7 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     if (stored && hasExpenseDraftContent(stored.data)) {
       applyDraftToForm(stored.data, stored.savedAt);
     } else {
-      setExpenseDate(claim.expenseDate);
-      setCategory(claim.category);
-      setAmount(String(claim.amount));
-      setTravelFrom(claim.travelFrom || '');
-      setTravelTo(claim.travelTo || '');
-      setDistanceKm(
-        typeof claim.distanceKm === 'number' && claim.distanceKm > 0
-          ? String(claim.distanceKm)
-          : ''
-      );
-      setDescription(claim.description);
+      populateFormFromClaim(claim);
       setDraftRestored(false);
       setDraftSavedAt(null);
     }
@@ -358,22 +465,17 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     setDraftRestored(false);
     setDraftSavedAt(null);
     if (editingClaim) {
-      setExpenseDate(editingClaim.expenseDate);
-      setCategory(editingClaim.category);
-      setAmount(String(editingClaim.amount));
-      setTravelFrom(editingClaim.travelFrom || '');
-      setTravelTo(editingClaim.travelTo || '');
-      setDistanceKm(
-        typeof editingClaim.distanceKm === 'number' && editingClaim.distanceKm > 0
-          ? String(editingClaim.distanceKm)
-          : ''
-      );
-      setDescription(editingClaim.description);
+      populateFormFromClaim(editingClaim);
       setExistingReceiptUrl(editingClaim.receiptUrl || '');
       setExistingReceiptPath(editingClaim.receiptPath || '');
     } else {
       setExpenseDate(todayIsoDate());
       setCategory('Travel / Fuel');
+      setWorkingType('HQ Working');
+      setPatchArea(defaultPatchArea);
+      setDailyAllowance('');
+      setTravellingAllowance('');
+      setOtherExpense('');
       setAmount('');
       setTravelFrom('');
       setTravelTo('');
@@ -395,6 +497,11 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     draft: {
       expenseDate,
       category,
+      workingType,
+      patchArea,
+      dailyAllowance,
+      travellingAllowance,
+      otherExpense,
       amount,
       travelFrom,
       travelTo,
@@ -409,7 +516,14 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     draft: {
       expenseDate,
       category,
-      amount,
+      workingType,
+      patchArea,
+      dailyAllowance,
+      travellingAllowance,
+      otherExpense,
+      amount: allowSelfAllowanceEntry
+        ? String(computeTotalFromBreakdown(dailyAllowance, travellingAllowance, otherExpense) || '')
+        : amount,
       travelFrom,
       travelTo,
       distanceKm,
@@ -447,6 +561,11 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     currentUser.uid,
     expenseDate,
     category,
+    workingType,
+    patchArea,
+    dailyAllowance,
+    travellingAllowance,
+    otherExpense,
     amount,
     travelFrom,
     travelTo,
@@ -582,16 +701,56 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
     setMsg('');
     setErr('');
 
-    const numericAmount = Number(amount);
     if (!expenseDate) {
       setFormError('Select the expense date.');
       return;
     }
+
+    const daNum = dailyAllowance.trim() ? Number(dailyAllowance) : 0;
+    const taNum = travellingAllowance.trim() ? Number(travellingAllowance) : 0;
+    const otherNum = otherExpense.trim() ? Number(otherExpense) : 0;
+
+    if (allowSelfAllowanceEntry) {
+      if (!patchArea.trim()) {
+        setFormError('Enter your working patch, beat, or market area.');
+        return;
+      }
+      if (!Number.isFinite(daNum) || daNum < 0 || daNum > 100000) {
+        setFormError('Daily Allowance (DA) must be between ₹0 and ₹1,00,000.');
+        return;
+      }
+      if (!Number.isFinite(taNum) || taNum < 0 || taNum > 100000) {
+        setFormError('Travelling Allowance (TA) must be between ₹0 and ₹1,00,000.');
+        return;
+      }
+      if (!Number.isFinite(otherNum) || otherNum < 0 || otherNum > 1000000) {
+        setFormError('Other Expense must be ₹0 or greater.');
+        return;
+      }
+    }
+
+    const numericAmount = allowSelfAllowanceEntry
+      ? Math.round((daNum + taNum + otherNum) * 100) / 100
+      : Math.round(Number(amount) * 100) / 100;
+
     if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
-      setFormError('Enter a valid expense amount greater than ₹0.');
+      setFormError(
+        allowSelfAllowanceEntry
+          ? 'Enter Daily Allowance (₹), Travelling Allowance (₹), or Other Expense greater than ₹0.'
+          : 'Enter a valid expense amount greater than ₹0.'
+      );
       return;
     }
-    if (!description.trim()) {
+
+    const resolvedDescription =
+      description.trim() ||
+      (allowSelfAllowanceEntry
+        ? `${workingType} — ${patchArea.trim()} (DA ₹${daNum} + TA ₹${taNum}${
+            otherNum > 0 ? ` + Other ₹${otherNum}` : ''
+          })`
+        : '');
+
+    if (!resolvedDescription) {
       setFormError('Enter expense details or trip purpose.');
       return;
     }
@@ -605,6 +764,14 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
       return;
     }
 
+    const resolvedCategory: ExpenseCategory = allowSelfAllowanceEntry
+      ? taNum > 0
+        ? 'Travel / Fuel'
+        : daNum > 0
+        ? 'Daily Allowance'
+        : category
+      : category;
+
     setSaving(true);
     const expenseId = editingClaim ? editingClaim.id : generateId('exp');
 
@@ -613,12 +780,24 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
 
       const basePayload: Record<string, any> = {
         expenseDate,
-        category,
-        amount: Math.round(numericAmount * 100) / 100,
-        description: description.trim().slice(0, 500),
+        category: resolvedCategory,
+        amount: numericAmount,
+        description: resolvedDescription.slice(0, 500),
         status: targetStatus,
         updatedAt: serverTimestamp(),
       };
+
+      if (myDesignation) {
+        basePayload.designation = myDesignation.slice(0, 80);
+      }
+
+      if (allowSelfAllowanceEntry) {
+        basePayload.workingType = workingType;
+        basePayload.patchArea = patchArea.trim().slice(0, 160);
+        basePayload.dailyAllowance = Math.round(daNum * 100) / 100;
+        basePayload.travellingAllowance = Math.round(taNum * 100) / 100;
+        basePayload.otherExpense = Math.round(otherNum * 100) / 100;
+      }
 
       if (travelFrom.trim()) basePayload.travelFrom = travelFrom.trim().slice(0, 120);
       if (travelTo.trim()) basePayload.travelTo = travelTo.trim().slice(0, 120);
@@ -644,10 +823,12 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
         await logActivity({
           userId: currentUser.uid,
           employeeName: currentUser.displayName,
-          action: 'Expense Submitted',
+          action: editingClaim ? 'Expense Updated & Submitted' : 'Expense Submitted',
           entityType: 'expense',
           entityId: expenseId,
-          details: `${category}: ${formatCurrency(numericAmount)} on ${expenseDate}`,
+          details: `${resolvedCategory}: ${formatCurrency(numericAmount)} on ${expenseDate}${
+            allowSelfAllowanceEntry ? ` (${workingType} · ${patchArea.trim()})` : ''
+          }`,
         });
       }
 
@@ -657,7 +838,11 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
       closeFormModal();
       setMsg(
         targetStatus === 'Pending Approval'
-          ? 'Expense submitted for admin approval.'
+          ? editingClaim
+            ? 'Expense updated and submitted for Super Admin approval.'
+            : 'Expense submitted for Super Admin approval.'
+          : editingClaim
+          ? 'Expense draft updated.'
           : 'Expense saved as draft.'
       );
     } catch (error: any) {
@@ -784,6 +969,9 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
   const filteredClaims = useMemo(() => {
     const q = search.trim().toLowerCase();
     return expenses.filter((c) => {
+      if (isAdminView && scopeTab === 'MINE' && c.userId !== currentUser.uid) {
+        return false;
+      }
       if (monthFilter && !c.expenseDate.startsWith(monthFilter)) return false;
       if (statusFilter !== 'ALL' && c.status !== statusFilter) return false;
       if (categoryFilter !== 'ALL' && c.category !== categoryFilter) return false;
@@ -793,21 +981,37 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
       if (!q) return true;
       return (
         c.employeeName.toLowerCase().includes(q) ||
+        (c.designation || '').toLowerCase().includes(q) ||
+        (c.patchArea || '').toLowerCase().includes(q) ||
+        (c.workingType || '').toLowerCase().includes(q) ||
         c.description.toLowerCase().includes(q) ||
         c.category.toLowerCase().includes(q) ||
         (c.travelFrom || '').toLowerCase().includes(q) ||
         (c.travelTo || '').toLowerCase().includes(q)
       );
     });
-  }, [expenses, monthFilter, statusFilter, categoryFilter, employeeFilter, isAdminView, search]);
+  }, [
+    expenses,
+    monthFilter,
+    statusFilter,
+    categoryFilter,
+    employeeFilter,
+    isAdminView,
+    scopeTab,
+    currentUser.uid,
+    search,
+  ]);
 
   // Summary metrics (scoped to selected month or all)
   const monthScoped = useMemo(
     () =>
-      monthFilter
-        ? expenses.filter((c) => c.expenseDate.startsWith(monthFilter))
-        : expenses,
-    [expenses, monthFilter]
+      expenses.filter((c) => {
+        if (isAdminView && scopeTab === 'MINE' && c.userId !== currentUser.uid) {
+          return false;
+        }
+        return monthFilter ? c.expenseDate.startsWith(monthFilter) : true;
+      }),
+    [expenses, monthFilter, isAdminView, scopeTab, currentUser.uid]
   );
 
   const pendingList = monthScoped.filter((c) => c.status === 'Pending Approval');
@@ -840,11 +1044,17 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
       [
         'Date',
         'Employee',
+        'Designation',
+        'Working Type',
+        'Patch / Area',
         'Category',
+        'Daily Allowance (INR)',
+        'Travelling Allowance (INR)',
+        'Other Expense (INR)',
+        'Total Amount (INR)',
         'Route / From-To',
         'Distance (km)',
         'Description',
-        'Amount (INR)',
         'Status',
         'Receipt Attached',
         'Reviewed By',
@@ -854,11 +1064,17 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
       filteredClaims.map((c) => [
         c.expenseDate,
         c.employeeName,
+        c.designation || '',
+        c.workingType || '',
+        c.patchArea || c.territory || '',
         c.category,
+        c.dailyAllowance ?? '',
+        c.travellingAllowance ?? '',
+        c.otherExpense ?? '',
+        c.amount,
         c.travelFrom || c.travelTo ? `${c.travelFrom || ''} -> ${c.travelTo || ''}` : '',
         c.distanceKm ?? '',
         c.description,
-        c.amount,
         c.status,
         c.receiptUrl ? 'Yes' : 'No',
         c.reviewedByName || '',
@@ -874,16 +1090,46 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-slate-900">
-            {isAdminView ? 'Field Expense Claims & Approvals' : 'My Travel & Daily Expenses'}
+            {isSuperAdmin
+              ? 'Employee Expense Claims · Super Admin Approval & Payment'
+              : isAdminView
+              ? 'Expense Claims & My Daily / Travel Allowances'
+              : 'My Working, Patch, DA & TA Expenses'}
           </h2>
           <p className="text-xs text-slate-500">
-            {isAdminView
-              ? 'Verify receipt photos, approve or reject field claims, and track reimbursements.'
-              : 'Log travel, daily allowance, and field expenses with camera-captured receipts for admin approval.'}
+            {isSuperAdmin
+              ? 'Review employee working, patch, Daily Allowance (DA) & Travelling Allowance (TA) claims, approve, and record payouts.'
+              : 'Enter your working type, patch/area, Daily Allowance (₹), and Travelling Allowance (₹) directly. You can edit claims anytime before Super Admin approval.'}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {isAdminView && (
+            <div className="inline-flex rounded-lg bg-slate-100 p-1 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setScopeTab('ALL')}
+                className={`px-2.5 py-1.5 rounded-md transition-colors ${
+                  scopeTab === 'ALL'
+                    ? 'bg-[#0F2744] text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                All Claims
+              </button>
+              <button
+                type="button"
+                onClick={() => setScopeTab('MINE')}
+                className={`px-2.5 py-1.5 rounded-md transition-colors ${
+                  scopeTab === 'MINE'
+                    ? 'bg-[#15803D] text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                My Claims
+              </button>
+            </div>
+          )}
           {isAdminView && (
             <button
               type="button"
@@ -894,14 +1140,16 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
               Export CSV
             </button>
           )}
-          <button
-            type="button"
-            onClick={openCreateModal}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-lg min-h-[40px]"
-          >
-            <Plus className="w-4 h-4" />
-            Log Expense
-          </button>
+          {!isExecutiveRole && (
+            <button
+              type="button"
+              onClick={openCreateModal}
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-lg min-h-[40px]"
+            >
+              <Plus className="w-4 h-4" />
+              Add DA / TA Expense
+            </button>
+          )}
         </div>
       </div>
 
@@ -1123,14 +1371,16 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
           <div className="p-10 text-center text-xs text-slate-500 space-y-2">
             <Receipt className="w-8 h-8 text-slate-300 mx-auto" />
             <div>No expense claims match the selected filters.</div>
-            <button
-              type="button"
-              onClick={openCreateModal}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#0F2744] rounded-lg"
-            >
-              <Camera className="w-3.5 h-3.5" />
-              Capture Receipt &amp; Log Expense
-            </button>
+            {!isExecutiveRole && (
+              <button
+                type="button"
+                onClick={openCreateModal}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#0F2744] rounded-lg"
+              >
+                <Camera className="w-3.5 h-3.5" />
+                Add Working, Patch &amp; DA / TA Claim
+              </button>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -1138,10 +1388,10 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
                 <tr>
                   <th className="px-4 py-3 font-semibold">Date</th>
-                  {isAdminView && <th className="px-4 py-3 font-semibold">Employee</th>}
-                  <th className="px-4 py-3 font-semibold">Category &amp; Details</th>
+                  {isAdminView && <th className="px-4 py-3 font-semibold">Employee &amp; Post</th>}
+                  <th className="px-4 py-3 font-semibold">Working, Patch &amp; Details</th>
                   <th className="px-4 py-3 font-semibold">Receipt</th>
-                  <th className="px-4 py-3 font-semibold text-right">Amount</th>
+                  <th className="px-4 py-3 font-semibold text-right">DA / TA &amp; Total</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
                   <th className="px-4 py-3 font-semibold text-right">Actions</th>
                 </tr>
@@ -1150,7 +1400,16 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
                 {filteredClaims.map((c) => {
                   const isOwner = c.userId === currentUser.uid;
                   const canEmployeeEdit =
+                    isOwner &&
+                    (c.status === 'Draft' ||
+                      c.status === 'Pending Approval' ||
+                      c.status === 'Rejected');
+                  const canEmployeeDelete =
                     isOwner && (c.status === 'Draft' || c.status === 'Rejected');
+                  const hasDaTaBreakdown =
+                    typeof c.dailyAllowance === 'number' ||
+                    typeof c.travellingAllowance === 'number' ||
+                    typeof c.otherExpense === 'number';
                   return (
                     <tr key={c.id} className="hover:bg-slate-50/70 align-top">
                       <td className="px-4 py-3 font-mono whitespace-nowrap text-slate-700">
@@ -1161,13 +1420,27 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
                           <div className="font-semibold text-slate-900">
                             {c.employeeName}
                           </div>
-                          {c.territory && (
-                            <div className="text-[11px] text-slate-500">{c.territory}</div>
+                          {(c.designation || c.territory) && (
+                            <div className="text-[11px] text-slate-500">
+                              {[c.designation, c.territory].filter(Boolean).join(' · ')}
+                            </div>
                           )}
                         </td>
                       )}
                       <td className="px-4 py-3 max-w-xs">
-                        <div className="font-semibold text-slate-900">{c.category}</div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-semibold text-slate-900">{c.category}</span>
+                          {c.workingType && (
+                            <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-slate-100 text-[#0F2744] rounded border border-slate-200">
+                              {c.workingType}
+                            </span>
+                          )}
+                        </div>
+                        {c.patchArea && (
+                          <div className="text-[11px] font-medium text-[#15803D] mt-0.5">
+                            Patch: {c.patchArea}
+                          </div>
+                        )}
                         {(c.travelFrom || c.travelTo || typeof c.distanceKm === 'number') && (
                           <div className="text-[11px] text-[#0F2744] flex items-center gap-1 mt-0.5">
                             <MapPin className="w-3 h-3 shrink-0" />
@@ -1211,8 +1484,24 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
                           <span className="text-slate-400">No receipt</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-right font-mono tabular-nums font-bold text-slate-900 whitespace-nowrap">
-                        {formatCurrency(c.amount)}
+                      <td className="px-4 py-3 text-right font-mono tabular-nums whitespace-nowrap">
+                        <div className="font-bold text-slate-900">
+                          {formatCurrency(c.amount)}
+                        </div>
+                        {hasDaTaBreakdown && (
+                          <div className="text-[10px] text-slate-500 mt-0.5 space-y-0.5">
+                            {typeof c.dailyAllowance === 'number' && c.dailyAllowance > 0 && (
+                              <div>DA: {formatCurrency(c.dailyAllowance)}</div>
+                            )}
+                            {typeof c.travellingAllowance === 'number' &&
+                              c.travellingAllowance > 0 && (
+                                <div>TA: {formatCurrency(c.travellingAllowance)}</div>
+                              )}
+                            {typeof c.otherExpense === 'number' && c.otherExpense > 0 && (
+                              <div>Other: {formatCurrency(c.otherExpense)}</div>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         <span
@@ -1230,7 +1519,7 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
                       </td>
                       <td className="px-4 py-3 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5 justify-end">
-                          {isAdminView && (
+                          {(isSuperAdmin || isAdminView) && (
                             <button
                               type="button"
                               onClick={() => {
@@ -1241,7 +1530,7 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
                               className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-white bg-[#0F2744] hover:bg-slate-800 rounded-lg"
                             >
                               <Eye className="w-3 h-3" />
-                              Review
+                              {isSuperAdmin ? 'Review / Pay' : 'View'}
                             </button>
                           )}
 
@@ -1250,7 +1539,7 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
                               type="button"
                               onClick={() => handleQuickSubmitDraft(c)}
                               className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-white bg-[#15803D] hover:bg-[#166534] rounded-lg"
-                              title="Submit for Approval"
+                              title="Submit for Super Admin Approval"
                             >
                               <Send className="w-3 h-3" />
                               Submit
@@ -1261,14 +1550,15 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
                             <button
                               type="button"
                               onClick={() => openEditModal(c)}
-                              className="p-1.5 text-slate-600 hover:text-[#0F2744] hover:bg-slate-100 rounded-lg"
-                              title="Edit / Attach Receipt"
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-[#0F2744] bg-slate-100 hover:bg-slate-200 rounded-lg"
+                              title="Edit DA, TA, Patch, Details or Receipt"
                             >
-                              <Pencil className="w-3.5 h-3.5" />
+                              <Pencil className="w-3 h-3" />
+                              Edit
                             </button>
                           )}
 
-                          {canEmployeeEdit && (
+                          {canEmployeeDelete && (
                             <button
                               type="button"
                               onClick={() => handleDeleteClaim(c)}
@@ -1296,10 +1586,12 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h3 className="text-base font-bold text-slate-900">
-                  {editingClaim ? 'Edit Expense Claim' : 'Log Field Sales Expense'}
+                  {editingClaim ? 'Edit Expense Claim' : 'Log Working, Patch & DA / TA Expense'}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Capture receipt via camera and submit for manager/admin approval.
+                  {allowSelfAllowanceEntry
+                    ? `Post: ${myDesignation} · Enter Daily Allowance (₹), Travelling Allowance (₹) & Patch for Super Admin approval.`
+                    : 'Capture receipt via camera and log claim details.'}
                 </p>
               </div>
               <button
@@ -1335,58 +1627,186 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
             )}
 
             <div className="space-y-3.5">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Expense Date
-                  </label>
-                  <input
-                    type="date"
-                    value={expenseDate}
-                    max={todayIsoDate()}
-                    onChange={(e) => setExpenseDate(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Amount (₹)
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    step="0.01"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="e.g. 450"
-                    className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
-                    required
-                  />
-                </div>
-              </div>
+              {allowSelfAllowanceEntry ? (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        Expense Date
+                      </label>
+                      <input
+                        type="date"
+                        value={expenseDate}
+                        max={todayIsoDate()}
+                        onChange={(e) => setExpenseDate(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        Working Type
+                      </label>
+                      <select
+                        value={workingType}
+                        onChange={(e) => setWorkingType(e.target.value as ExpenseWorkingType)}
+                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                      >
+                        {WORKING_TYPES.map((wt) => (
+                          <option key={wt} value={wt}>
+                            {wt}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
 
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Expense Category
-                </label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value as ExpenseCategory)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
-                >
-                  {EXPENSE_CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        Working Patch / Beat / Market Area
+                      </label>
+                      <input
+                        type="text"
+                        value={patchArea}
+                        onChange={(e) => setPatchArea(e.target.value)}
+                        placeholder="e.g. North Zone - Civil Hospital & Main Market"
+                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        Employee Post / Designation
+                      </label>
+                      <input
+                        type="text"
+                        value={myDesignation}
+                        readOnly
+                        className="w-full px-3 py-2 text-sm border border-slate-200 bg-slate-50 text-slate-700 rounded-lg"
+                      />
+                    </div>
+                  </div>
 
-              {category === 'Travel / Fuel' && (
+                  {/* Employee self-entered Daily Allowance (₹) + Travelling Allowance (₹) */}
+                  <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3.5 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-[#0F2744]">
+                        Self-Entered Allowance &amp; Travel (₹)
+                      </span>
+                      <span className="text-xs font-mono font-bold text-[#15803D]">
+                        Total:{' '}
+                        {formatCurrency(
+                          computeTotalFromBreakdown(
+                            dailyAllowance,
+                            travellingAllowance,
+                            otherExpense
+                          )
+                        )}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Daily Allowance (DA ₹)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={dailyAllowance}
+                          onChange={(e) => setDailyAllowance(e.target.value)}
+                          placeholder="e.g. 300"
+                          className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg bg-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Travelling Allowance (TA ₹)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={travellingAllowance}
+                          onChange={(e) => setTravellingAllowance(e.target.value)}
+                          placeholder="e.g. 250"
+                          className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg bg-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Other / Hotel / Misc (₹)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={otherExpense}
+                          onChange={(e) => setOtherExpense(e.target.value)}
+                          placeholder="0"
+                          className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg bg-white"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        Expense Date
+                      </label>
+                      <input
+                        type="date"
+                        value={expenseDate}
+                        max={todayIsoDate()}
+                        onChange={(e) => setExpenseDate(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        Amount (₹)
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="0.01"
+                        value={amount}
+                        onChange={(e) => setAmount(e.target.value)}
+                        placeholder="e.g. 450"
+                        className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-lg"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Expense Category
+                    </label>
+                    <select
+                      value={category}
+                      onChange={(e) => setCategory(e.target.value as ExpenseCategory)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                    >
+                      {EXPENSE_CATEGORIES.map((cat) => (
+                        <option key={cat} value={cat}>
+                          {cat}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {(allowSelfAllowanceEntry || category === 'Travel / Fuel') && (
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
                   <div className="text-[11px] font-semibold text-slate-700">
-                    Travel Route &amp; Distance
+                    Travel Route &amp; Distance (Optional)
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <input
@@ -1418,15 +1838,14 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
 
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Description / Remarks
+                  Working Details / Remarks
                 </label>
                 <textarea
                   rows={2}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Purpose of expense (e.g. Fuel for doctor calls in North Zone)"
+                  placeholder="Describe calls covered, patch visited, or expense breakdown..."
                   className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
-                  required
                 />
               </div>
 
@@ -1615,6 +2034,27 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
             </div>
 
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-xs space-y-1.5">
+              {(inspectClaim.designation || inspectClaim.workingType || inspectClaim.patchArea) && (
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-[#0F2744]">
+                  {inspectClaim.designation && <span>Post: {inspectClaim.designation}</span>}
+                  {inspectClaim.workingType && <span>· {inspectClaim.workingType}</span>}
+                  {inspectClaim.patchArea && (
+                    <span className="text-[#15803D]">· Patch: {inspectClaim.patchArea}</span>
+                  )}
+                </div>
+              )}
+              {(typeof inspectClaim.dailyAllowance === 'number' ||
+                typeof inspectClaim.travellingAllowance === 'number' ||
+                typeof inspectClaim.otherExpense === 'number') && (
+                <div className="flex flex-wrap gap-3 font-mono text-[11px] text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                  <span>DA: {formatCurrency(inspectClaim.dailyAllowance || 0)}</span>
+                  <span>TA: {formatCurrency(inspectClaim.travellingAllowance || 0)}</span>
+                  {typeof inspectClaim.otherExpense === 'number' &&
+                    inspectClaim.otherExpense > 0 && (
+                      <span>Other: {formatCurrency(inspectClaim.otherExpense)}</span>
+                    )}
+                </div>
+              )}
               {(inspectClaim.travelFrom || inspectClaim.travelTo) && (
                 <div className="font-medium text-[#0F2744]">
                   Route: {inspectClaim.travelFrom || 'Start'} &rarr;{' '}
@@ -1663,12 +2103,12 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
               </div>
             )}
 
-            {isAdminView && inspectClaim.status !== 'Draft' && (
+            {isSuperAdmin && inspectClaim.status !== 'Draft' ? (
               <div className="border-t border-slate-200 pt-4 space-y-3">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Admin Review Remarks
+                      Super Admin Review Remarks
                     </label>
                     <input
                       type="text"
@@ -1680,13 +2120,13 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Payout Reference (for Reimbursement)
+                      Payment / Payout Reference (for Reimbursement)
                     </label>
                     <input
                       type="text"
                       value={reimburseRef}
                       onChange={(e) => setReimburseRef(e.target.value)}
-                      placeholder="UTR / NEFT / Cash Voucher #"
+                      placeholder="UTR / UPI / NEFT / Cash Voucher #"
                       className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
                     />
                   </div>
@@ -1724,11 +2164,17 @@ export const ExpensesModule: React.FC<ExpensesModuleProps> = ({
                       className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#0F2744] hover:bg-slate-800 rounded-lg min-h-[40px] disabled:opacity-60"
                     >
                       <Banknote className="w-3.5 h-3.5" />
-                      Mark Reimbursed
+                      Mark Paid / Reimbursed
                     </button>
                   )}
                 </div>
               </div>
+            ) : (
+              inspectClaim.status !== 'Draft' && (
+                <div className="border-t border-slate-200 pt-3 text-[11px] text-slate-500">
+                  Expense approval and payment settlement is restricted to Super Admin.
+                </div>
+              )
             )}
           </div>
         </div>

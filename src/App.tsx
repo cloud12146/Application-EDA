@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import {
   collection,
@@ -170,6 +170,7 @@ const STOCK_MANAGER_NAV: NavItem[] = [
   { id: 'stock-movements', label: 'Stock Movements', icon: ArrowLeftRight },
   { id: 'orders', label: 'Orders', icon: ShoppingCart },
   { id: 'distributors', label: 'Distributors', icon: Truck },
+  { id: 'my-expenses', label: 'My Expenses', icon: Receipt },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'my-profile', label: 'My Profile', icon: UserIcon },
@@ -552,6 +553,12 @@ function WorkspaceApp() {
         'tasks',
         query(collection(db, 'tasks'), where('assignedToUid', '==', uid)),
         setTasks,
+        'createdAt'
+      );
+      subscribe<ExpenseClaim>(
+        'expenses',
+        query(collection(db, 'expenses'), where('userId', '==', uid)),
+        setExpenses,
         'createdAt'
       );
     } else if (isDistributor) {
@@ -938,16 +945,10 @@ function WorkspaceApp() {
     }
   }, [currentUser, attendance, livePermissionState]);
 
-  const liveTrackingController: LiveTrackingController = {
-    isTracking: isLiveTracking,
-    permissionState: livePermissionState,
-    trackingError: liveTrackingError,
-    lastPingAtMs: lastLivePingAtMs,
-    currentCoords: liveTrackingCoords,
-    startLiveTracking: startAppLiveTracking,
-    stopLiveTracking: stopAppLiveTracking,
-    recordManualPing: async ({ coords, status, trackingActive, customer, note }) => {
-      if (!currentUser) return;
+  const recordManualLivePing = useCallback<LiveTrackingController['recordManualPing']>(
+    async ({ coords, status, trackingActive, customer, note }) => {
+      const activeCtx = latestTrackingContextRef.current;
+      if (!activeCtx.currentUser) return;
       const now = Date.now();
       setLastLivePingAtMs(now);
       setLiveTrackingCoords({
@@ -957,9 +958,9 @@ function WorkspaceApp() {
         capturedAtMs: now,
       });
       await writeValidatedLocationPing({
-        currentUser,
-        employees,
-        settings,
+        currentUser: activeCtx.currentUser,
+        employees: activeCtx.employees,
+        settings: activeCtx.settings,
         coords,
         status,
         trackingActive,
@@ -967,8 +968,35 @@ function WorkspaceApp() {
         note,
       });
     },
-    clearTrackingError: () => setLiveTrackingError(''),
-  };
+    []
+  );
+
+  const clearLiveTrackingError = useCallback(() => {
+    setLiveTrackingError('');
+  }, []);
+
+  const liveTrackingController: LiveTrackingController = useMemo(
+    () => ({
+      isTracking: isLiveTracking,
+      permissionState: livePermissionState,
+      trackingError: liveTrackingError,
+      lastPingAtMs: lastLivePingAtMs,
+      currentCoords: liveTrackingCoords,
+      startLiveTracking: startAppLiveTracking,
+      stopLiveTracking: stopAppLiveTracking,
+      recordManualPing: recordManualLivePing,
+      clearTrackingError: clearLiveTrackingError,
+    }),
+    [
+      isLiveTracking,
+      livePermissionState,
+      liveTrackingError,
+      lastLivePingAtMs,
+      liveTrackingCoords,
+      recordManualLivePing,
+      clearLiveTrackingError,
+    ]
+  );
 
   const handleShiftCheckIn = async (
     pos: GeolocationPosition,
@@ -989,10 +1017,17 @@ function WorkspaceApp() {
     });
   };
 
-  const handleCheckEmployeeLiveLocation = (employeeUid: string) => {
-    setFocusedLiveEmployeeUid(employeeUid);
-    setActiveTab(isManagementRole(currentUser?.role) ? 'live-location' : 'my-visits');
-  };
+  const handleCheckEmployeeLiveLocation = useCallback(
+    (employeeUid: string) => {
+      setFocusedLiveEmployeeUid(employeeUid);
+      setActiveTab(isManagementRole(currentUser?.role) ? 'live-location' : 'my-visits');
+    },
+    [currentUser?.role]
+  );
+
+  const handleClearInitialLiveFocus = useCallback(() => {
+    setFocusedLiveEmployeeUid(null);
+  }, []);
 
   const handleLogout = async () => {
     await stopAppLiveTracking({ recordCheckoutPing: false });
@@ -1184,7 +1219,7 @@ function WorkspaceApp() {
             settings={settings}
             liveTracking={liveTrackingController}
             initialFocusEmployeeUid={focusedLiveEmployeeUid}
-            onClearInitialFocus={() => setFocusedLiveEmployeeUid(null)}
+            onClearInitialFocus={handleClearInitialLiveFocus}
           />
         );
       case 'attendance':

@@ -534,6 +534,14 @@ export type ExpenseCategory =
   | 'Doctor Visit / CME'
   | 'Courier / Misc';
 
+export type ExpenseWorkingType =
+  | 'HQ Working'
+  | 'Ex-HQ Working'
+  | 'Outstation'
+  | 'Transit'
+  | 'Field Camp / CME'
+  | 'Office / Admin';
+
 export type ExpenseStatus =
   | 'Draft'
   | 'Pending Approval'
@@ -546,7 +554,13 @@ export interface ExpenseClaim {
   userId: string;
   employeeName: string;
   department?: string;
+  designation?: string;
   territory?: string;
+  workingType?: ExpenseWorkingType;
+  patchArea?: string;
+  dailyAllowance?: number;
+  travellingAllowance?: number;
+  otherExpense?: number;
   expenseDate: string; // YYYY-MM-DD
   category: ExpenseCategory;
   amount: number;

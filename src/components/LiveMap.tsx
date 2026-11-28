@@ -171,6 +171,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const employeeMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const latestLocationsRef = useRef<LocationPing[]>([]);
   const lastFitKeyRef = useRef<string>('');
+  const lastClusterStatsRef = useRef<MapClusterStats | null>(null);
   const onTileCachedRef = useRef(onTileCached);
   onTileCachedRef.current = onTileCached;
   const onSelectCallRef = useRef(onSelectCall);
@@ -179,6 +180,22 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   onSelectEmployeeRef.current = onSelectEmployee;
   const onClusterStatsChangeRef = useRef(onClusterStatsChange);
   onClusterStatsChangeRef.current = onClusterStatsChange;
+
+  const emitClusterStats = (stats: MapClusterStats) => {
+    const prev = lastClusterStatsRef.current;
+    if (
+      prev &&
+      prev.totalEmployees === stats.totalEmployees &&
+      prev.visibleMarkerCount === stats.visibleMarkerCount &&
+      prev.clusterCount === stats.clusterCount &&
+      prev.zoom === stats.zoom &&
+      prev.isClustered === stats.isClustered
+    ) {
+      return;
+    }
+    lastClusterStatsRef.current = stats;
+    onClusterStatsChangeRef.current?.(stats);
+  };
 
   const [isOnline, setIsOnline] = useState(
     typeof navigator !== 'undefined' ? navigator.onLine : true
@@ -241,7 +258,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     empGroup.clearLayers();
     employeeMarkersRef.current.clear();
     if (isHistoryMode) {
-      onClusterStatsChangeRef.current?.({
+      emitClusterStats({
         totalEmployees: 0,
         visibleMarkerCount: 0,
         clusterCount: 0,
@@ -412,7 +429,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       }
     });
 
-    onClusterStatsChangeRef.current?.({
+    emitClusterStats({
       totalEmployees: result.totalEmployees,
       visibleMarkerCount: result.visibleMarkerCount,
       clusterCount: result.clusterCount,
@@ -672,7 +689,18 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       routeUserId,
       focusedEmployeeUid
     );
-  }, [locations, customers, doctorCalls, geofenceCenter, routeUserId, visitHistoryMode, focusedEmployeeUid]);
+  }, [
+    locations,
+    customers,
+    doctorCalls,
+    geofenceCenter?.lat,
+    geofenceCenter?.lng,
+    geofenceCenter?.radiusM,
+    geofenceCenter?.label,
+    routeUserId,
+    visitHistoryMode,
+    focusedEmployeeUid,
+  ]);
 
   // Re-cluster employee pins dynamically on zoom/pan or when clustering toggle changes
   useEffect(() => {

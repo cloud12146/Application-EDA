@@ -58,6 +58,17 @@ service cloud.firestore {
       return hasUserDoc() && currentUserDoc().isActive == true && currentUserDoc().role != 'Pending';
     }
 
+    function isSuperAdmin() {
+      return isVerifiedUser() && (
+        isBootstrapOwner() ||
+        (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+          && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'Super Admin'
+        ) ||
+        (isActiveUser() && currentUserDoc().role == 'Super Admin')
+      );
+    }
+
     function isManagerOrAdmin() {
       return isAdmin() || (
         isActiveUser() && currentUserDoc().role in [
@@ -677,7 +688,8 @@ service cloud.firestore {
           'amount', 'description', 'status', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'id', 'userId', 'employeeName', 'department', 'territory',
+          'id', 'userId', 'employeeName', 'department', 'designation', 'territory',
+          'workingType', 'patchArea', 'dailyAllowance', 'travellingAllowance', 'otherExpense',
           'expenseDate', 'category', 'amount', 'travelFrom', 'travelTo',
           'distanceKm', 'description', 'receiptUrl', 'receiptPath',
           'status', 'reviewedByUid', 'reviewedByName', 'reviewRemarks',
@@ -695,7 +707,13 @@ service cloud.firestore {
         && data.status in ['Draft', 'Pending Approval', 'Approved', 'Rejected', 'Reimbursed']
         && isOptStr(data, 'id', 128)
         && isOptStr(data, 'department', 80)
+        && isOptStr(data, 'designation', 80)
         && isOptStr(data, 'territory', 120)
+        && (!('workingType' in data) || data.workingType in ['HQ Working', 'Ex-HQ Working', 'Outstation', 'Transit', 'Field Camp / CME', 'Office / Admin'])
+        && isOptStr(data, 'patchArea', 160)
+        && (!('dailyAllowance' in data) || (data.dailyAllowance is number && data.dailyAllowance >= 0 && data.dailyAllowance <= 100000))
+        && (!('travellingAllowance' in data) || (data.travellingAllowance is number && data.travellingAllowance <= 100000 && data.travellingAllowance >= 0))
+        && (!('otherExpense' in data) || (data.otherExpense is number && data.otherExpense >= 0 && data.otherExpense <= 1000000))
         && isOptStr(data, 'travelFrom', 120)
         && isOptStr(data, 'travelTo', 120)
         && (!('distanceKm' in data) || (data.distanceKm is number && data.distanceKm >= 0 && data.distanceKm <= 10000))
@@ -1266,20 +1284,22 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          isManagerOrAdmin() ||
+          isSuperAdmin() ||
           (
             existing().userId == request.auth.uid
-            && existing().status in ['Draft', 'Rejected']
+            && existing().status in ['Draft', 'Pending Approval', 'Rejected']
             && incoming().status in ['Draft', 'Pending Approval']
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'expenseDate', 'category', 'amount', 'travelFrom', 'travelTo',
-              'distanceKm', 'description', 'receiptUrl', 'receiptPath',
-              'status', 'updatedAt'
+              'expenseDate', 'category', 'designation', 'workingType', 'patchArea',
+              'dailyAllowance', 'travellingAllowance', 'otherExpense', 'amount',
+              'travelFrom', 'travelTo', 'distanceKm', 'description',
+              'receiptUrl', 'receiptPath', 'status', 'updatedAt'
             ])
           )
         );
       allow delete: if isValidId(expenseId) && isActiveUser()
         && (
+          isSuperAdmin() ||
           isAdmin() ||
           (existing().userId == request.auth.uid && existing().status in ['Draft', 'Rejected'])
         );
