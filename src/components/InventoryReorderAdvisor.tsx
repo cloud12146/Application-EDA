@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { buildApiUrl } from '../lib/apiClient';
 import { logActivity } from '../lib/erpActions';
 import { formatTimestamp, tsToMs } from '../lib/utils';
 import {
@@ -216,7 +217,7 @@ export const InventoryReorderAdvisor: React.FC<InventoryReorderAdvisorProps> = (
     setAppliedIds(new Set());
 
     try {
-      const res = await fetch('/api/inventory/reorder-suggestions', {
+      const res = await fetch(buildApiUrl('/api/inventory/reorder-suggestions'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

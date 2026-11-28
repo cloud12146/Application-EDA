@@ -18,6 +18,14 @@ export interface LiveTrackingCoords {
   capturedAtMs: number;
 }
 
+export interface LivePositionInput {
+  coords: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number | null;
+  };
+}
+
 export interface LiveTrackingController {
   isTracking: boolean;
   permissionState: string;
@@ -25,17 +33,17 @@ export interface LiveTrackingController {
   lastPingAtMs: number | null;
   currentCoords: LiveTrackingCoords | null;
   startLiveTracking: (options?: {
-    initialPosition?: GeolocationPosition;
+    initialPosition?: LivePositionInput;
     note?: string;
     silentIfUnavailable?: boolean;
   }) => void;
   stopLiveTracking: (options?: {
     recordCheckoutPing?: boolean;
-    finalPosition?: GeolocationPosition;
+    finalPosition?: LivePositionInput;
     note?: string;
   }) => Promise<void>;
   recordManualPing: (params: {
-    coords: GeolocationCoordinates;
+    coords: { latitude: number; longitude: number; accuracy?: number | null };
     status: LocationPing['status'];
     trackingActive: boolean;
     customer?: Customer;

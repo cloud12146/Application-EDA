@@ -1,4 +1,5 @@
 import { DoctorCallRecord } from '../types/erp';
+import { getUnifiedCurrentPosition } from './nativeGeolocation';
 
 export interface CapturedGpsPoint {
   lat: number;
@@ -8,37 +9,34 @@ export interface CapturedGpsPoint {
 
 const geocodeCache = new Map<string, string>();
 
-export function captureCurrentGps(timeoutMs = 10000): Promise<CapturedGpsPoint> {
-  return new Promise((resolve, reject) => {
-    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
-      reject(new Error('GPS is not supported on this browser or device.'));
-      return;
+export async function captureCurrentGps(timeoutMs = 10000): Promise<CapturedGpsPoint> {
+  try {
+    const pos = await getUnifiedCurrentPosition({
+      enableHighAccuracy: true,
+      maximumAge: 15000,
+      timeout: timeoutMs,
+    });
+    return {
+      lat: pos.coords.latitude,
+      lng: pos.coords.longitude,
+      accuracy: Math.max(0, Math.round(pos.coords.accuracy || 0)),
+    };
+  } catch (err: any) {
+    if (err?.code === 1) {
+      throw new Error(
+        'Location permission denied. Allow location access in browser/device settings to record call place.'
+      );
     }
-
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        resolve({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: Math.max(0, Math.round(pos.coords.accuracy || 0)),
-        });
-      },
-      (err) => {
-        if (err.code === err.PERMISSION_DENIED) {
-          reject(
-            new Error(
-              'Location permission denied. Allow location access in browser/device settings to record call place.'
-            )
-          );
-        } else if (err.code === err.POSITION_UNAVAILABLE) {
-          reject(new Error('GPS signal unavailable. Ensure device Location/GPS is turned on.'));
-        } else {
-          reject(new Error('GPS request timed out. Tap Refresh GPS or enter place manually.'));
-        }
-      },
-      { enableHighAccuracy: true, maximumAge: 15000, timeout: timeoutMs }
+    if (err?.code === 2) {
+      throw new Error('GPS signal unavailable. Ensure device Location/GPS is turned on.');
+    }
+    if (err?.code === 3) {
+      throw new Error('GPS request timed out. Tap Refresh GPS or enter place manually.');
+    }
+    throw new Error(
+      err?.message || 'GPS is unavailable on this browser or device.'
     );
-  });
+  }
 }
 
 export async function reverseGeocodeCoords(lat: number, lng: number): Promise<string> {

@@ -1,5 +1,6 @@
 import { Customer } from '../types/erp';
 import { calculateHaversineMeters } from './utils';
+import { getUnifiedCurrentPosition } from './nativeGeolocation';
 
 export interface GeoOrigin {
   lat: number;
@@ -48,53 +49,37 @@ export function formatDistanceKm(meters: number): string {
   return `${(meters / 1000).toFixed(1)} km`;
 }
 
-export function getCurrentBrowserPosition(): Promise<{
+export async function getCurrentBrowserPosition(): Promise<{
   lat: number;
   lng: number;
   accuracy: number;
 }> {
-  return new Promise((resolve, reject) => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      reject(new Error('Geolocation API is not supported on this browser or device.'));
-      return;
+  try {
+    const pos = await getUnifiedCurrentPosition({
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 60000,
+    });
+    return {
+      lat: pos.coords.latitude,
+      lng: pos.coords.longitude,
+      accuracy: pos.coords.accuracy || 0,
+    };
+  } catch (err: any) {
+    if (err?.code === 1) {
+      throw new Error(
+        'Location permission denied. Enable GPS access or choose HQ / Customer origin.'
+      );
     }
-
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        resolve({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy || 0,
-        });
-      },
-      (err) => {
-        if (err.code === err.PERMISSION_DENIED) {
-          reject(
-            new Error(
-              'Location permission denied. Enable GPS access or choose HQ / Customer origin.'
-            )
-          );
-        } else if (err.code === err.TIMEOUT) {
-          reject(
-            new Error(
-              'GPS location request timed out. Try again or use HQ coordinates.'
-            )
-          );
-        } else {
-          reject(
-            new Error(
-              err.message || 'Unable to determine your current GPS position.'
-            )
-          );
-        }
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 60000,
-      }
+    if (err?.code === 3) {
+      throw new Error(
+        'GPS location request timed out. Try again or use HQ coordinates.'
+      );
+    }
+    throw new Error(
+      err?.message || 'Unable to determine your current GPS position.'
     );
-  });
+  }
 }
 
 function totalPathMeters(origin: { lat: number; lng: number }, list: Customer[]): number {

@@ -55,10 +55,17 @@ import { logActivity } from './lib/erpActions';
 import {
   LIVE_TRACKING_CONSENT_PREFIX,
   LIVE_TRACKING_DUTY_STORAGE_PREFIX,
+  LivePositionInput,
   LiveTrackingController,
   LiveTrackingCoords,
   writeValidatedLocationPing,
 } from './lib/liveLocation';
+import {
+  clearUnifiedWatch,
+  ensureNativeLocationPermission,
+  getUnifiedCurrentPosition,
+  watchUnifiedPosition,
+} from './lib/nativeGeolocation';
 import {
   getMissingOfficialCatalogProducts,
   getProductsNeedingV2CleanMigration,
@@ -252,7 +259,7 @@ function WorkspaceApp() {
   const [liveTrackingCoords, setLiveTrackingCoords] = useState<LiveTrackingCoords | null>(null);
   const [focusedLiveEmployeeUid, setFocusedLiveEmployeeUid] = useState<string | null>(null);
 
-  const liveWatchIdRef = useRef<number | null>(null);
+  const liveWatchIdRef = useRef<string | number | null>(null);
   const lastLivePingWriteRef = useRef<number>(0);
   const lastLivePingCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const liveNoteRef = useRef<string>('Authorized work-hour live GPS tracking');
@@ -725,20 +732,14 @@ function WorkspaceApp() {
     [notifications]
   );
 
-  // Monitor browser geolocation permission state & clean up watch on unmount
+  // Monitor device/browser geolocation permission state & clean up watch on unmount
   useEffect(() => {
-    if ('permissions' in navigator && navigator.permissions?.query) {
-      navigator.permissions
-        .query({ name: 'geolocation' })
-        .then((res) => {
-          setLivePermissionState(res.state);
-          res.onchange = () => setLivePermissionState(res.state);
-        })
-        .catch(() => {});
-    }
+    void ensureNativeLocationPermission().then((state) => {
+      setLivePermissionState(state);
+    });
     return () => {
-      if (liveWatchIdRef.current !== null && 'geolocation' in navigator) {
-        navigator.geolocation.clearWatch(liveWatchIdRef.current);
+      if (liveWatchIdRef.current !== null) {
+        void clearUnifiedWatch(liveWatchIdRef.current);
         liveWatchIdRef.current = null;
       }
     };
@@ -760,12 +761,13 @@ function WorkspaceApp() {
 
   const stopAppLiveTracking = async (options?: {
     recordCheckoutPing?: boolean;
-    finalPosition?: GeolocationPosition;
+    finalPosition?: LivePositionInput;
     note?: string;
   }) => {
-    if (liveWatchIdRef.current !== null && 'geolocation' in navigator) {
-      navigator.geolocation.clearWatch(liveWatchIdRef.current);
+    if (liveWatchIdRef.current !== null) {
+      const id = liveWatchIdRef.current;
       liveWatchIdRef.current = null;
+      await clearUnifiedWatch(id);
     }
     setIsLiveTracking(false);
     const ctx = latestTrackingContextRef.current;
@@ -774,7 +776,11 @@ function WorkspaceApp() {
     }
 
     if (options?.recordCheckoutPing && ctx.currentUser && ctx.currentUser.isActive) {
-      const writeCheckout = async (coords: GeolocationCoordinates) => {
+      const writeCheckout = async (coords: {
+        latitude: number;
+        longitude: number;
+        accuracy?: number | null;
+      }) => {
         if (!ctx.currentUser) return;
         await writeValidatedLocationPing({
           currentUser: ctx.currentUser,
@@ -789,20 +795,22 @@ function WorkspaceApp() {
 
       if (options.finalPosition) {
         await writeCheckout(options.finalPosition.coords);
-      } else if ('geolocation' in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            void writeCheckout(pos.coords);
-          },
-          () => {},
-          { enableHighAccuracy: true, timeout: 8000 }
-        );
+      } else {
+        try {
+          const pos = await getUnifiedCurrentPosition({
+            enableHighAccuracy: true,
+            timeout: 8000,
+          });
+          await writeCheckout(pos.coords);
+        } catch {
+          // non-blocking
+        }
       }
     }
   };
 
   const startAppLiveTracking = (options?: {
-    initialPosition?: GeolocationPosition;
+    initialPosition?: LivePositionInput;
     note?: string;
     silentIfUnavailable?: boolean;
   }) => {
@@ -811,19 +819,12 @@ function WorkspaceApp() {
       return;
     }
 
-    if (!('geolocation' in navigator)) {
-      if (!options?.silentIfUnavailable) {
-        setLiveTrackingError('Geolocation is not supported by this browser or device.');
-      }
-      return;
-    }
-
     setLiveTrackingError('');
     if (options?.note) {
       liveNoteRef.current = options.note;
     }
 
-    const handleNewPosition = async (pos: GeolocationPosition, forceWrite = false) => {
+    const handleNewPosition = async (pos: LivePositionInput, forceWrite = false) => {
       const activeCtx = latestTrackingContextRef.current;
       if (!activeCtx.currentUser || !activeCtx.currentUser.isActive) return;
 
@@ -876,13 +877,16 @@ function WorkspaceApp() {
       return;
     }
 
-    const watchId = navigator.geolocation.watchPosition(
+    setIsLiveTracking(true);
+    persistTrackingFlags(ctx.currentUser.uid, true);
+
+    void watchUnifiedPosition(
       (pos) => {
         void handleNewPosition(pos);
       },
       (err) => {
         setIsLiveTracking(false);
-        if (err.code === err.PERMISSION_DENIED) {
+        if (err.code === 1) {
           setLivePermissionState('denied');
           if (latestTrackingContextRef.current.currentUser) {
             persistTrackingFlags(latestTrackingContextRef.current.currentUser.uid, false);
@@ -893,7 +897,7 @@ function WorkspaceApp() {
             );
           }
         } else if (!options?.silentIfUnavailable) {
-          if (err.code === err.POSITION_UNAVAILABLE) {
+          if (err.code === 2) {
             setLiveTrackingError('GPS signal unavailable. Ensure device location/GPS is turned on.');
           } else {
             setLiveTrackingError('Location request timed out. Move to an open area and try again.');
@@ -901,11 +905,18 @@ function WorkspaceApp() {
         }
       },
       { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
-    );
-
-    liveWatchIdRef.current = watchId;
-    setIsLiveTracking(true);
-    persistTrackingFlags(ctx.currentUser.uid, true);
+    )
+      .then((watchId) => {
+        liveWatchIdRef.current = watchId;
+      })
+      .catch((err) => {
+        setIsLiveTracking(false);
+        if (!options?.silentIfUnavailable) {
+          setLiveTrackingError(
+            err?.message || 'Geolocation is not supported by this browser or device.'
+          );
+        }
+      });
   };
 
   // Auto-resume live GPS tracking across page reloads if employee consented & is still checked in today
@@ -999,7 +1010,7 @@ function WorkspaceApp() {
   );
 
   const handleShiftCheckIn = async (
-    pos: GeolocationPosition,
+    pos: LivePositionInput,
     workMode: 'Field' | 'Office'
   ) => {
     startAppLiveTracking({
@@ -1009,7 +1020,7 @@ function WorkspaceApp() {
     });
   };
 
-  const handleShiftCheckOut = async (pos: GeolocationPosition) => {
+  const handleShiftCheckOut = async (pos: LivePositionInput) => {
     await stopAppLiveTracking({
       recordCheckoutPing: true,
       finalPosition: pos,
@@ -1708,8 +1719,32 @@ function WorkspaceApp() {
 }
 
 export default function App() {
+  const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
+
+  useEffect(() => {
+    const onQuotaExceeded = () => setMapsQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
+  }, []);
+
   return (
     <ErrorBoundary>
+      {mapsQuotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm no-print">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
       <WorkspaceApp />
     </ErrorBoundary>
   );

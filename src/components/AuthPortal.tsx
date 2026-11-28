@@ -130,7 +130,18 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
       );
       await signInWithPopup(auth, provider);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Google sign-in failed. Please allow popups and try again.');
+      const code = err?.code || '';
+      const host =
+        typeof window !== 'undefined' ? window.location.hostname : 'unknown';
+      if (code === 'auth/unauthorized-domain') {
+        setErrorMsg(
+          `Domain "${host}" is not authorized in Firebase Authentication. Add "${host}" under Firebase Console > Authentication > Settings > Authorized domains (or sign in using Corporate Credentials).`
+        );
+      } else {
+        setErrorMsg(
+          err?.message || 'Google sign-in failed. Please allow popups and try again.'
+        );
+      }
     } finally {
       setLoading(false);
     }

@@ -148,6 +148,42 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
+  const configuredOrigin = (process.env.APP_URL || '').trim().replace(/\/+$/, '');
+  const allowedOrigins = new Set<string>([
+    'https://localhost',
+    'capacitor://localhost',
+    'http://localhost',
+    'http://localhost:3000',
+    'http://localhost:5173',
+  ]);
+  if (configuredOrigin) {
+    allowedOrigins.add(configuredOrigin);
+  }
+
+  app.use((req: Request, res: Response, next) => {
+    const origin = (req.headers.origin || '').trim();
+    const isAllowedCloudRunPreview =
+      /^https:\/\/[a-z0-9-]+\.run\.app$/i.test(origin);
+    if (origin && (allowedOrigins.has(origin) || isAllowedCloudRunPreview)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization'
+      );
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.json({ ok: true, service: 'glacetor-bms-backend' });
+  });
+
   app.post('/api/inventory/reorder-suggestions', async (req: Request, res: Response) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {

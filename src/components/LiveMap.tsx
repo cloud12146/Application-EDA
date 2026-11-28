@@ -1,41 +1,27 @@
-import React, { useEffect, useRef, useState } from 'react';
-import L from 'leaflet';
+/// <reference types="google.maps" />
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AdvancedMarker,
+  AdvancedMarkerAnchorPoint,
+  AdvancedMarkerProps,
+  APIProvider,
+  Circle,
+  InfoWindow,
+  Map as GoogleMap,
+  Pin,
+  Polyline,
+  useAdvancedMarkerRef,
+  useMap,
+} from '@vis.gl/react-google-maps';
 import { Customer, DoctorCallRecord, LocationPing } from '../types/erp';
 import { formatTimeOnly, formatTimestamp, tsToMs } from '../lib/utils';
 import {
-  cacheSingleTileResponse,
-  getCachedTileBlobUrl,
-} from '../lib/offlineMapTiles';
-import {
-  clusterEmployeeLocations,
+  clusterLocationsForViewport,
   getLatestLocationsByUser,
-  LocationCluster,
+  ViewportBoundsLiteral,
+  ViewportLocationCluster,
 } from '../lib/mapClustering';
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function getCallTimestampLabel(call: DoctorCallRecord): string {
-  const ms = tsToMs(call.createdAt);
-  if (ms > 0) {
-    return formatTimestamp(call.createdAt);
-  }
-  return call.callDate || '—';
-}
-
-function getCallShortBadgeTime(call: DoctorCallRecord): string {
-  const ms = tsToMs(call.createdAt);
-  if (ms > 0) {
-    const time = formatTimeOnly(call.createdAt);
-    if (time && time !== '—') return time;
-  }
-  return call.callDate ? call.callDate.slice(5) : '';
-}
+import { LeafletFallbackMap } from './LeafletFallbackMap';
 
 export interface MapClusterStats {
   totalEmployees: number;
@@ -63,90 +49,94 @@ interface LiveMapProps {
   onClusterStatsChange?: (stats: MapClusterStats) => void;
 }
 
-class CachedOsmTileLayer extends L.TileLayer {
-  private onTileCached?: () => void;
-
-  constructor(
-    urlTemplate: string,
-    options?: L.TileLayerOptions & { onTileCached?: () => void }
-  ) {
-    super(urlTemplate, options);
-    this.onTileCached = options?.onTileCached;
+function getCallTimestampLabel(call: DoctorCallRecord): string {
+  const ms = tsToMs(call.createdAt);
+  if (ms > 0) {
+    return formatTimestamp(call.createdAt);
   }
-
-  createTile(coords: L.Coords, done: L.DoneCallback): HTMLElement {
-    const tile = document.createElement('img');
-    tile.alt = '';
-    tile.setAttribute('role', 'presentation');
-    if (this.options.crossOrigin || this.options.crossOrigin === '') {
-      tile.crossOrigin =
-        this.options.crossOrigin === true ? '' : this.options.crossOrigin;
-    }
-
-    const url = this.getTileUrl(coords);
-    let objectUrl: string | null = null;
-    let settled = false;
-
-    const cleanup = () => {
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-        objectUrl = null;
-      }
-    };
-
-    tile.onload = () => {
-      cleanup();
-      if (!settled) {
-        settled = true;
-        done(undefined, tile);
-      }
-    };
-
-    tile.onerror = () => {
-      cleanup();
-      if (!settled) {
-        settled = true;
-        done(new Error(`Tile unavailable: ${url}`), tile);
-      }
-    };
-
-    (async () => {
-      try {
-        const cachedBlobUrl = await getCachedTileBlobUrl(url);
-        if (cachedBlobUrl) {
-          objectUrl = cachedBlobUrl;
-          tile.src = cachedBlobUrl;
-          return;
-        }
-
-        if (typeof navigator !== 'undefined' && !navigator.onLine) {
-          if (!settled) {
-            settled = true;
-            done(new Error('Offline and tile not cached'), tile);
-          }
-          return;
-        }
-
-        const res = await fetch(url, { mode: 'cors' });
-        if (res.ok) {
-          await cacheSingleTileResponse(url, res.clone());
-          this.onTileCached?.();
-          const blob = await res.blob();
-          objectUrl = URL.createObjectURL(blob);
-          tile.src = objectUrl;
-          return;
-        }
-      } catch {
-        // Fallback to standard browser image load if fetch/Cache API unavailable
-      }
-      tile.src = url;
-    })();
-
-    return tile;
-  }
+  return call.callDate || '—';
 }
 
-export const LiveMap: React.FC<LiveMapProps> = ({
+function getCallShortBadgeTime(call: DoctorCallRecord): string {
+  const ms = tsToMs(call.createdAt);
+  if (ms > 0) {
+    const time = formatTimeOnly(call.createdAt);
+    if (time && time !== '—') return time;
+  }
+  return call.callDate ? call.callDate.slice(5) : '';
+}
+
+type SelectedMapInfo =
+  | {
+      kind: 'employee';
+      id: string;
+      anchor: google.maps.marker.AdvancedMarkerElement;
+      loc: LocationPing;
+    }
+  | {
+      kind: 'cluster';
+      id: string;
+      anchor: google.maps.marker.AdvancedMarkerElement;
+      cluster: ViewportLocationCluster;
+    }
+  | {
+      kind: 'customer';
+      id: string;
+      anchor: google.maps.marker.AdvancedMarkerElement;
+      customer: Customer;
+    }
+  | {
+      kind: 'call';
+      id: string;
+      anchor: google.maps.marker.AdvancedMarkerElement;
+      call: DoctorCallRecord;
+      stopNo?: number;
+    }
+  | {
+      kind: 'visit';
+      id: string;
+      anchor: google.maps.marker.AdvancedMarkerElement;
+      loc: LocationPing;
+    };
+
+interface AdvancedMarkerWithRefProps extends Omit<AdvancedMarkerProps, 'onClick'> {
+  onMarkerClick: (marker: google.maps.marker.AdvancedMarkerElement) => void;
+  registerMarker?: (marker: google.maps.marker.AdvancedMarkerElement | null) => void;
+}
+
+const AdvancedMarkerWithRef: React.FC<AdvancedMarkerWithRefProps> = ({
+  children,
+  onMarkerClick,
+  registerMarker,
+  ...advancedMarkerProps
+}) => {
+  const [markerRef, marker] = useAdvancedMarkerRef();
+
+  useEffect(() => {
+    registerMarker?.(marker);
+    return () => registerMarker?.(null);
+  }, [marker, registerMarker]);
+
+  return (
+    <AdvancedMarker
+      ref={markerRef}
+      onClick={() => {
+        if (marker) {
+          onMarkerClick(marker);
+        }
+      }}
+      {...advancedMarkerProps}
+    >
+      {children}
+    </AdvancedMarker>
+  );
+};
+
+interface GoogleLiveMapInnerProps extends LiveMapProps {
+  onMapsLoadError: () => void;
+}
+
+const GoogleLiveMapInner: React.FC<GoogleLiveMapInnerProps> = ({
   locations,
   customers = [],
   doctorCalls = [],
@@ -157,638 +147,782 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   focusedCallId = null,
   focusedEmployeeUid = null,
   focusTick = 0,
-  heightClass = 'h-[420px]',
-  onTileCached,
   onSelectCall,
   onSelectEmployee,
   onClusterStatsChange,
 }) => {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<L.Map | null>(null);
-  const layerGroupRef = useRef<L.LayerGroup | null>(null);
-  const employeeLayerGroupRef = useRef<L.LayerGroup | null>(null);
-  const callMarkersRef = useRef<Map<string, L.Layer>>(new Map());
-  const employeeMarkersRef = useRef<Map<string, L.Marker>>(new Map());
-  const latestLocationsRef = useRef<LocationPing[]>([]);
+  const map = useMap();
+  const [zoom, setZoom] = useState(12);
+  const [boundsLiteral, setBoundsLiteral] = useState<ViewportBoundsLiteral | null>(null);
+  const [selectedInfo, setSelectedInfo] = useState<SelectedMapInfo | null>(null);
+
+  const callMarkerInstancesRef = useRef<
+    Record<string, google.maps.marker.AdvancedMarkerElement>
+  >({});
+  const empMarkerInstancesRef = useRef<
+    Record<string, google.maps.marker.AdvancedMarkerElement>
+  >({});
   const lastFitKeyRef = useRef<string>('');
   const lastClusterStatsRef = useRef<MapClusterStats | null>(null);
-  const onTileCachedRef = useRef(onTileCached);
-  onTileCachedRef.current = onTileCached;
-  const onSelectCallRef = useRef(onSelectCall);
-  onSelectCallRef.current = onSelectCall;
-  const onSelectEmployeeRef = useRef(onSelectEmployee);
-  onSelectEmployeeRef.current = onSelectEmployee;
   const onClusterStatsChangeRef = useRef(onClusterStatsChange);
   onClusterStatsChangeRef.current = onClusterStatsChange;
 
-  const emitClusterStats = (stats: MapClusterStats) => {
-    const prev = lastClusterStatsRef.current;
-    if (
-      prev &&
-      prev.totalEmployees === stats.totalEmployees &&
-      prev.visibleMarkerCount === stats.visibleMarkerCount &&
-      prev.clusterCount === stats.clusterCount &&
-      prev.zoom === stats.zoom &&
-      prev.isClustered === stats.isClustered
-    ) {
-      return;
+  const syncCameraMetrics = useCallback(() => {
+    if (!map) return;
+    const nextZoom = map.getZoom();
+    if (typeof nextZoom === 'number') {
+      setZoom(nextZoom);
     }
-    lastClusterStatsRef.current = stats;
-    onClusterStatsChangeRef.current?.(stats);
-  };
+    const b = map.getBounds();
+    if (b) {
+      const ne = b.getNorthEast();
+      const sw = b.getSouthWest();
+      setBoundsLiteral({
+        north: ne.lat(),
+        east: ne.lng(),
+        south: sw.lat(),
+        west: sw.lng(),
+      });
+    }
+  }, [map]);
 
-  const [isOnline, setIsOnline] = useState(
-    typeof navigator !== 'undefined' ? navigator.onLine : true
+  const sortedHistoryPings = useMemo(() => {
+    if (!visitHistoryMode) return [];
+    return [...locations].sort(
+      (a, b) => tsToMs(a.recordedAt) - tsToMs(b.recordedAt)
+    );
+  }, [visitHistoryMode, locations]);
+
+  const historyVisitPings = useMemo(
+    () => sortedHistoryPings.filter((l) => l.status === 'Customer Visit'),
+    [sortedHistoryPings]
   );
 
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
+  const historyGpsCalls = useMemo(() => {
+    if (!visitHistoryMode) return [];
+    return doctorCalls
+      .filter((c) => typeof c.lat === 'number' && typeof c.lng === 'number')
+      .sort((a, b) => {
+        const diff = tsToMs(a.createdAt) - tsToMs(b.createdAt);
+        if (diff !== 0) return diff;
+        return (a.callDate || '').localeCompare(b.callDate || '');
+      });
+  }, [visitHistoryMode, doctorCalls]);
 
-  useEffect(() => {
-    if (!containerRef.current || mapRef.current) return;
+  const liveGpsCalls = useMemo(() => {
+    if (visitHistoryMode) return [];
+    return doctorCalls.filter(
+      (c) => typeof c.lat === 'number' && typeof c.lng === 'number'
+    );
+  }, [visitHistoryMode, doctorCalls]);
 
-    const initialCenter: [number, number] = geofenceCenter
-      ? [geofenceCenter.lat, geofenceCenter.lng]
-      : [19.076, 72.8777];
+  const latestLocations = useMemo(() => {
+    if (visitHistoryMode) return [];
+    return getLatestLocationsByUser(locations);
+  }, [visitHistoryMode, locations]);
 
-    const map = L.map(containerRef.current, {
-      center: initialCenter,
-      zoom: 12,
-      zoomControl: true,
-    });
+  const routeCoords = useMemo(() => {
+    if (visitHistoryMode || !routeUserId) return [];
+    return locations
+      .filter((l) => l.userId === routeUserId)
+      .map((l) => ({ lat: l.lat, lng: l.lng }));
+  }, [visitHistoryMode, routeUserId, locations]);
 
-    new CachedOsmTileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors',
-      maxZoom: 19,
-      crossOrigin: 'anonymous',
-      onTileCached: () => onTileCachedRef.current?.(),
-    }).addTo(map);
-
-    const group = L.layerGroup().addTo(map);
-    const empGroup = L.layerGroup().addTo(map);
-    mapRef.current = map;
-    layerGroupRef.current = group;
-    employeeLayerGroupRef.current = empGroup;
-
-    return () => {
-      map.remove();
-      mapRef.current = null;
-      layerGroupRef.current = null;
-      employeeLayerGroupRef.current = null;
-      callMarkersRef.current.clear();
-    };
-  }, []);
-
-  const renderEmployeeClusters = (
-    map: L.Map,
-    empGroup: L.LayerGroup,
-    isClusterEnabled: boolean,
-    isHistoryMode: boolean,
-    activeRouteUserId?: string,
-    activeFocusedUserId?: string | null
-  ) => {
-    empGroup.clearLayers();
-    employeeMarkersRef.current.clear();
-    if (isHistoryMode) {
-      emitClusterStats({
+  const clusterResult = useMemo(() => {
+    if (visitHistoryMode) {
+      return {
+        clusters: [] as ViewportLocationCluster[],
         totalEmployees: 0,
         visibleMarkerCount: 0,
         clusterCount: 0,
-        zoom: map.getZoom(),
+        zoom,
         isClustered: false,
-      });
-      return;
+      };
     }
-
-    const result = clusterEmployeeLocations(latestLocationsRef.current, map, {
-      enabled: isClusterEnabled,
+    return clusterLocationsForViewport(latestLocations, zoom, boundsLiteral, {
+      enabled: clusterEmployees,
       maxClusterZoom: 14,
-      excludeUserId: activeFocusedUserId || activeRouteUserId || undefined,
+      excludeUserId: focusedEmployeeUid || routeUserId || undefined,
     });
-
-    const zoom = result.zoom;
-
-    result.clusters.forEach((cluster: LocationCluster) => {
-      if (cluster.count === 1) {
-        const loc = cluster.items[0];
-        const isLive = loc.trackingActive && !loc.isDemo && loc.status !== 'Checked Out';
-        const isSelectedRoute = Boolean(activeRouteUserId && loc.userId === activeRouteUserId);
-        const isFocusedEmp = Boolean(activeFocusedUserId && loc.userId === activeFocusedUserId);
-        const color = isLive ? '#15803D' : loc.isDemo ? '#64748B' : '#0F2744';
-
-        // Only draw accuracy radius circles when zoomed in enough to avoid visual clutter
-        if (zoom >= 12 || isSelectedRoute) {
-          L.circle([loc.lat, loc.lng], {
-            radius: Math.min(loc.accuracy || 30, 500),
-            color,
-            fillColor: color,
-            fillOpacity: 0.12,
-            weight: 1,
-          }).addTo(empGroup);
-        }
-
-        const ringStyle = isFocusedEmp
-          ? 'box-shadow:0 0 0 4px rgba(22,163,74,0.45), 0 4px 10px rgba(15,23,42,0.35);'
-          : isSelectedRoute
-          ? 'box-shadow:0 0 0 3px rgba(15,39,68,0.35), 0 2px 6px rgba(15,23,42,0.3);'
-          : 'box-shadow:0 2px 6px rgba(15,23,42,0.25);';
-
-        const liveDotHtml = isLive
-          ? '<span style="display:inline-block;width:7px;height:7px;border-radius:9999px;background:#86EFAC;margin-right:4px"></span>'
-          : '';
-
-        const divIcon = L.divIcon({
-          className: 'custom-emp-pin',
-          html: `<div style="display:inline-flex;align-items:center;background:${color};color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap;border:2px solid #fff;${ringStyle}">${liveDotHtml}${escapeHtml(
-            loc.employeeName.split(' ')[0]
-          )}</div>`,
-          iconSize: [96, 26],
-          iconAnchor: [48, 13],
-        });
-
-        const visitDetails = loc.customerName
-          ? `<span>Place/Call: ${escapeHtml(loc.customerName)}</span><br/>`
-          : '';
-        const noteLine = loc.note
-          ? `<span>Note: ${escapeHtml(loc.note)}</span><br/>`
-          : '';
-        const mapsHref = `https://www.google.com/maps?q=${loc.lat.toFixed(6)},${loc.lng.toFixed(6)}`;
-
-        const marker = L.marker([loc.lat, loc.lng], {
-          icon: divIcon,
-          zIndexOffset: isFocusedEmp ? 800 : isSelectedRoute ? 500 : isLive ? 200 : 0,
-        })
-          .bindPopup(
-            `<div style="font-size:12px;line-height:1.45;min-width:190px">
-              <strong>${escapeHtml(loc.employeeName)}</strong><br/>
-              <span style="font-weight:600;color:${isLive ? '#15803D' : '#334155'}">${
-                isLive ? '● LIVE GPS' : escapeHtml(loc.status)
-              }${loc.isDemo ? ' (Sample Demo)' : ''}</span><br/>
-              ${visitDetails}${noteLine}<span>Territory: ${escapeHtml(loc.territory || 'Assigned')}</span><br/>
-              <span>Coords: ${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)} (±${Math.round(loc.accuracy)}m)</span><br/>
-              <span>Updated: ${escapeHtml(formatTimestamp(loc.recordedAt))}</span><br/>
-              <a href="${mapsHref}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:4px;color:#0F2744;font-weight:600;text-decoration:underline">Open in Google Maps ↗</a>
-            </div>`
-          )
-          .on('click', () => onSelectEmployeeRef.current?.(loc.userId))
-          .addTo(empGroup);
-
-        employeeMarkersRef.current.set(loc.userId, marker);
-      } else {
-        const size = cluster.count >= 50 ? 48 : cluster.count >= 10 ? 42 : 36;
-        const fontSize = cluster.count >= 50 ? 13 : 12;
-        const bgColor =
-          cluster.liveCount > 0
-            ? '#0F2744'
-            : cluster.demoCount === cluster.count
-            ? '#475569'
-            : '#1E293B';
-        const borderAccent = cluster.liveCount > 0 ? '#15803D' : '#CBD5E1';
-
-        const clusterIcon = L.divIcon({
-          className: 'custom-emp-cluster-pin',
-          html: `<div style="width:${size}px;height:${size}px;border-radius:9999px;background:${bgColor};color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;border:3px solid #fff;box-shadow:0 0 0 2px ${borderAccent}, 0 4px 12px rgba(15,23,42,0.3);font-family:var(--font-mono);font-variant-numeric:tabular-nums;line-height:1;cursor:pointer">
-            <span style="font-size:${fontSize}px;font-weight:700">${cluster.count}</span>
-            ${
-              cluster.liveCount > 0
-                ? `<span style="font-size:9px;font-weight:600;color:#86EFAC;margin-top:1px">${cluster.liveCount} live</span>`
-                : ''
-            }
-          </div>`,
-          iconSize: [size, size],
-          iconAnchor: [size / 2, size / 2],
-        });
-
-        const previewRows = cluster.items
-          .slice(0, 30)
-          .map((emp) => {
-            const isLive = emp.trackingActive && !emp.isDemo;
-            const statusText = isLive ? 'Live' : emp.status;
-            const statusColor = isLive ? '#15803D' : '#475569';
-            return `<div style="padding:5px 0;border-bottom:1px solid #E2E8F0;display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
-              <div style="min-width:0">
-                <div style="font-weight:600;color:#0F172A">${escapeHtml(emp.employeeName)}</div>
-                <div style="font-size:11px;color:#64748B">${escapeHtml(
-                  emp.territory || 'Field Zone'
-                )} · ${escapeHtml(formatTimestamp(emp.recordedAt))}</div>
-              </div>
-              <span style="font-size:10px;font-weight:700;color:${statusColor};white-space:nowrap">${escapeHtml(
-              statusText
-            )}</span>
-            </div>`;
-          })
-          .join('');
-
-        const overflowNotice =
-          cluster.count > 30
-            ? `<div style="padding-top:6px;font-size:11px;color:#64748B;text-align:center">+${
-                cluster.count - 30
-              } more employees in this cluster</div>`
-            : '';
-
-        const popupHtml = `<div style="font-size:12px;min-width:230px;max-width:280px">
-          <div style="font-weight:700;color:#0F2744;padding-bottom:6px;border-bottom:1px solid #CBD5E1">
-            ${cluster.count} Field Personnel · ${cluster.liveCount} Live
-          </div>
-          <div style="max-height:210px;overflow-y:auto">${previewRows}${overflowNotice}</div>
-        </div>`;
-
-        const marker = L.marker([cluster.lat, cluster.lng], {
-          icon: clusterIcon,
-          zIndexOffset: 300,
-        })
-          .bindTooltip(
-            `${cluster.count} employees (${cluster.liveCount} live) · ${
-              cluster.hasGeographicSpread && zoom < 15
-                ? 'Click to zoom in'
-                : 'Click to view roster'
-            }`,
-            { direction: 'top', offset: [0, -Math.round(size / 2)] }
-          )
-          .bindPopup(popupHtml)
-          .on('click', (e) => {
-            if (cluster.hasGeographicSpread && map.getZoom() < 15) {
-              e.target.closePopup();
-              map.fitBounds(cluster.bounds, {
-                padding: [56, 56],
-                maxZoom: 15,
-                animate: true,
-              });
-            }
-          });
-
-        marker.addTo(empGroup);
-      }
-    });
-
-    emitClusterStats({
-      totalEmployees: result.totalEmployees,
-      visibleMarkerCount: result.visibleMarkerCount,
-      clusterCount: result.clusterCount,
-      zoom: result.zoom,
-      isClustered: result.isClustered,
-    });
-  };
+  }, [
+    visitHistoryMode,
+    latestLocations,
+    zoom,
+    boundsLiteral,
+    clusterEmployees,
+    focusedEmployeeUid,
+    routeUserId,
+  ]);
 
   useEffect(() => {
-    const map = mapRef.current;
-    const group = layerGroupRef.current;
-    const empGroup = employeeLayerGroupRef.current;
-    if (!map || !group || !empGroup) return;
-
-    group.clearLayers();
-    callMarkersRef.current.clear();
-    const bounds: L.LatLngExpression[] = [];
-
-    if (geofenceCenter && !visitHistoryMode) {
-      L.circle([geofenceCenter.lat, geofenceCenter.lng], {
-        radius: geofenceCenter.radiusM,
-        color: '#0F2744',
-        fillColor: '#0F2744',
-        fillOpacity: 0.08,
-        weight: 1.5,
-        dashArray: '4 4',
-      })
-        .bindPopup(
-          `<strong>${escapeHtml(geofenceCenter.label || 'Authorized Geofence')}</strong><br/>Radius: ${geofenceCenter.radiusM}m`
-        )
-        .addTo(group);
-      bounds.push([geofenceCenter.lat, geofenceCenter.lng]);
+    const nextStats: MapClusterStats = {
+      totalEmployees: clusterResult.totalEmployees,
+      visibleMarkerCount: clusterResult.visibleMarkerCount,
+      clusterCount: clusterResult.clusterCount,
+      zoom: clusterResult.zoom,
+      isClustered: clusterResult.isClustered,
+    };
+    const prev = lastClusterStatsRef.current;
+    if (
+      prev &&
+      prev.totalEmployees === nextStats.totalEmployees &&
+      prev.visibleMarkerCount === nextStats.visibleMarkerCount &&
+      prev.clusterCount === nextStats.clusterCount &&
+      prev.zoom === nextStats.zoom &&
+      prev.isClustered === nextStats.isClustered
+    ) {
+      return;
     }
+    lastClusterStatsRef.current = nextStats;
+    onClusterStatsChangeRef.current?.(nextStats);
+  }, [clusterResult]);
 
-    // Customer pins (shown in Live Map mode; hidden in focused employee visit history unless needed)
+  // Fit map bounds automatically when dataset or mode changes
+  useEffect(() => {
+    if (!map) return;
+
+    const points: google.maps.LatLngLiteral[] = [];
+    if (geofenceCenter && !visitHistoryMode) {
+      points.push({ lat: geofenceCenter.lat, lng: geofenceCenter.lng });
+    }
     if (!visitHistoryMode) {
       for (const c of customers) {
         if (typeof c.lat === 'number' && typeof c.lng === 'number') {
-          const marker = L.circleMarker([c.lat, c.lng], {
-            radius: 6,
-            color: '#15803D',
-            fillColor: '#16A34A',
-            fillOpacity: 0.85,
-            weight: 2,
-          }).bindPopup(
-            `<div style="font-size:12px">
-              <strong>${escapeHtml(c.businessName)}</strong><br/>
-              <span>${escapeHtml(c.category)} · ${escapeHtml(c.city)}</span><br/>
-              <span>Rep: ${escapeHtml(c.assignedEmployeeName)}</span>
-            </div>`
-          );
-          marker.addTo(group);
-          bounds.push([c.lat, c.lng]);
+          points.push({ lat: c.lat, lng: c.lng });
         }
       }
-    }
-
-    if (visitHistoryMode) {
-      latestLocationsRef.current = [];
-
-      // Chronological route from employee GPS pings + numbered doctor call pins with timestamps
-      const sortedPings = [...locations].sort(
-        (a, b) => tsToMs(a.recordedAt) - tsToMs(b.recordedAt)
-      );
-      const pingCoords: L.LatLngExpression[] = sortedPings.map((l) => [l.lat, l.lng]);
-
-      if (pingCoords.length > 1) {
-        L.polyline(pingCoords, {
-          color: '#0F2744',
-          weight: 2.5,
-          opacity: 0.55,
-          dashArray: '5 5',
-        }).addTo(group);
+      for (const c of liveGpsCalls) {
+        points.push({ lat: c.lat as number, lng: c.lng as number });
       }
-
-      // Plot customer / general GPS visit check-ins (excluding duplicate auto-pings if doctor call covers it)
-      for (const loc of sortedPings) {
-        if (loc.status === 'Customer Visit') {
-          const timeLabel = escapeHtml(formatTimestamp(loc.recordedAt));
-          const title = escapeHtml(loc.customerName || loc.territory || 'Field Check-in');
-          const noteHtml = loc.note ? `<br/><span>${escapeHtml(loc.note)}</span>` : '';
-          L.circleMarker([loc.lat, loc.lng], {
-            radius: 5,
-            color: '#0F2744',
-            fillColor: '#0EA5E9',
-            fillOpacity: 0.85,
-            weight: 1.5,
-          })
-            .bindPopup(
-              `<div style="font-size:12px;line-height:1.4">
-                <strong>Visit Ping: ${title}</strong><br/>
-                <span>Time: ${timeLabel}</span>${noteHtml}<br/>
-                <span>Accuracy: ±${Math.round(loc.accuracy)}m</span>
-              </div>`
-            )
-            .addTo(group);
-        }
-        bounds.push([loc.lat, loc.lng]);
-      }
-
-      // Chronologically ordered doctor calls with GPS coordinates
-      const gpsCalls = doctorCalls
-        .filter((c) => typeof c.lat === 'number' && typeof c.lng === 'number')
-        .sort((a, b) => {
-          const diff = tsToMs(a.createdAt) - tsToMs(b.createdAt);
-          if (diff !== 0) return diff;
-          return (a.callDate || '').localeCompare(b.callDate || '');
-        });
-
-      const callTrailCoords: L.LatLngExpression[] = gpsCalls.map((c) => [
-        c.lat as number,
-        c.lng as number,
-      ]);
-      if (callTrailCoords.length > 1) {
-        L.polyline(callTrailCoords, {
-          color: '#6D28D9',
-          weight: 3,
-          opacity: 0.8,
-        }).addTo(group);
-      }
-
-      gpsCalls.forEach((c, idx) => {
-        const lat = c.lat as number;
-        const lng = c.lng as number;
-        const stopNo = idx + 1;
-        const shortTime = getCallShortBadgeTime(c);
-        const fullTime = getCallTimestampLabel(c);
-        const place = escapeHtml(
-          c.locationName || c.areaBeat || c.clinicName || 'Call Location'
-        );
-
-        const pinIcon = L.divIcon({
-          className: 'doctor-call-history-pin',
-          html: `<div style="display:inline-flex;align-items:center;gap:4px;background:#5B21B6;color:#fff;padding:3px 8px;border-radius:9999px;font-size:11px;font-weight:700;white-space:nowrap;border:2px solid #fff;box-shadow:0 3px 8px rgba(15,23,42,0.32)"><span>#${stopNo}</span>${
-            shortTime
-              ? `<span style="font-weight:500;opacity:0.92;font-size:10px">${escapeHtml(
-                  shortTime
-                )}</span>`
-              : ''
-          }</div>`,
-          iconSize: [92, 26],
-          iconAnchor: [46, 13],
-        });
-
-        const popupHtml = `<div style="font-size:12px;line-height:1.45;min-width:210px">
-          <div style="font-weight:700;color:#0F2744">#${stopNo} · ${escapeHtml(
-          c.doctorName
-        )}</div>
-          <div style="color:#5B21B6;font-weight:600;margin-top:2px">⏱ ${escapeHtml(
-            fullTime
-          )}</div>
-          <div><strong>Rep:</strong> ${escapeHtml(c.employeeName)}</div>
-          <div><strong>Place:</strong> ${place}</div>
-          ${
-            c.clinicName
-              ? `<div><strong>Clinic:</strong> ${escapeHtml(c.clinicName)}</div>`
-              : ''
-          }
-          <div><strong>Outcome:</strong> ${escapeHtml(c.callOutcome)}</div>
-          <div><strong>Products:</strong> ${escapeHtml(
-            c.productsShown.slice(0, 4).join(', ')
-          )}</div>
-          <div style="margin-top:3px;color:#334155;font-style:italic">&ldquo;${escapeHtml(
-            c.doctorRemark
-          )}&rdquo;</div>
-        </div>`;
-
-        const marker = L.marker([lat, lng], { icon: pinIcon })
-          .bindPopup(popupHtml)
-          .on('click', () => onSelectCallRef.current?.(c.id))
-          .addTo(group);
-
-        callMarkersRef.current.set(c.id, marker);
-        bounds.push([lat, lng]);
-      });
-
-      if (bounds.length === 0 && geofenceCenter) {
-        bounds.push([geofenceCenter.lat, geofenceCenter.lng]);
+      for (const loc of latestLocations) {
+        points.push({ lat: loc.lat, lng: loc.lng });
       }
     } else {
-      // Live Map mode: Doctor Call pins (where each call took place)
-      for (const c of doctorCalls) {
-        if (typeof c.lat === 'number' && typeof c.lng === 'number') {
-          const place = escapeHtml(
-            c.locationName || c.areaBeat || c.clinicName || 'Call GPS Tagged'
-          );
-          const fullTime = escapeHtml(getCallTimestampLabel(c));
-          const marker = L.circleMarker([c.lat, c.lng], {
-            radius: 7,
-            color: '#5B21B6',
-            fillColor: '#7C3AED',
-            fillOpacity: 0.9,
-            weight: 2,
-          }).bindPopup(
-            `<div style="font-size:12px;line-height:1.4">
-              <strong>Call: ${escapeHtml(c.doctorName)}</strong><br/>
-              <span>Rep: ${escapeHtml(c.employeeName)}</span><br/>
-              <span>Time: ${fullTime}</span><br/>
-              <span>Place: ${place}</span><br/>
-              <span>Outcome: ${escapeHtml(c.callOutcome)}</span><br/>
-              <span style="color:#475569">${escapeHtml(
-                c.productsShown.slice(0, 3).join(', ')
-              )}</span>
-            </div>`
-          );
-          marker.addTo(group);
-          callMarkersRef.current.set(c.id, marker);
-          bounds.push([c.lat, c.lng]);
-        }
+      for (const loc of sortedHistoryPings) {
+        points.push({ lat: loc.lat, lng: loc.lng });
       }
-
-      // Deduplicate latest location per user & draw selected route polyline
-      const latestLocations = getLatestLocationsByUser(locations);
-      latestLocationsRef.current = latestLocations;
-
-      const routeCoords: L.LatLngExpression[] = [];
-      if (routeUserId) {
-        for (const loc of locations) {
-          if (loc.userId === routeUserId) {
-            routeCoords.push([loc.lat, loc.lng]);
-          }
-        }
+      for (const c of historyGpsCalls) {
+        points.push({ lat: c.lat as number, lng: c.lng as number });
       }
-
-      if (routeCoords.length > 1) {
-        L.polyline(routeCoords, {
-          color: '#0F2744',
-          weight: 3,
-          opacity: 0.75,
-        }).addTo(group);
-      }
-
-      for (const loc of latestLocations) {
-        bounds.push([loc.lat, loc.lng]);
+      if (points.length === 0 && geofenceCenter) {
+        points.push({ lat: geofenceCenter.lat, lng: geofenceCenter.lng });
       }
     }
 
     const fitKey = visitHistoryMode
       ? `history:${locations.map((l) => l.id).join(',')}:${doctorCalls.map((c) => c.id).join(',')}`
-      : `live:${routeUserId || ''}:${latestLocationsRef.current.length > 0 ? 'hasLoc' : 'noLoc'}:${
+      : `live:${routeUserId || ''}:${latestLocations.length > 0 ? 'hasLoc' : 'noLoc'}:${
           customers.length > 0 ? 'hasCust' : 'noCust'
         }`;
 
-    if (bounds.length > 0 && lastFitKeyRef.current !== fitKey) {
+    if (points.length > 0 && lastFitKeyRef.current !== fitKey) {
       lastFitKeyRef.current = fitKey;
-      map.fitBounds(L.latLngBounds(bounds), {
-        padding: [40, 40],
-        maxZoom: visitHistoryMode ? 15 : 14,
-      });
+      if (points.length === 1) {
+        map.panTo(points[0]);
+        map.setZoom(visitHistoryMode ? 15 : 13);
+      } else {
+        const bounds = new window.google.maps.LatLngBounds();
+        points.forEach((pt) => bounds.extend(pt));
+        map.fitBounds(bounds, 48);
+      }
     }
-
-    renderEmployeeClusters(
-      map,
-      empGroup,
-      clusterEmployees,
-      visitHistoryMode,
-      routeUserId,
-      focusedEmployeeUid
-    );
   }, [
-    locations,
-    customers,
-    doctorCalls,
+    map,
+    visitHistoryMode,
     geofenceCenter?.lat,
     geofenceCenter?.lng,
-    geofenceCenter?.radiusM,
-    geofenceCenter?.label,
+    customers,
+    liveGpsCalls,
+    latestLocations,
+    sortedHistoryPings,
+    historyGpsCalls,
+    locations,
+    doctorCalls,
     routeUserId,
-    visitHistoryMode,
-    focusedEmployeeUid,
   ]);
 
-  // Re-cluster employee pins dynamically on zoom/pan or when clustering toggle changes
+  // Focus selected doctor call
   useEffect(() => {
-    const map = mapRef.current;
-    const empGroup = employeeLayerGroupRef.current;
-    if (!map || !empGroup) return;
-
-    renderEmployeeClusters(
-      map,
-      empGroup,
-      clusterEmployees,
-      visitHistoryMode,
-      routeUserId,
-      focusedEmployeeUid
-    );
-
-    if (visitHistoryMode) return;
-
-    let rafId: number | null = null;
-    const scheduleClusterRefresh = () => {
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
-        if (!mapRef.current || !employeeLayerGroupRef.current) return;
-        renderEmployeeClusters(
-          mapRef.current,
-          employeeLayerGroupRef.current,
-          clusterEmployees,
-          visitHistoryMode,
-          routeUserId,
-          focusedEmployeeUid
-        );
-      });
-    };
-
-    map.on('zoomend', scheduleClusterRefresh);
-    map.on('moveend', scheduleClusterRefresh);
-
-    return () => {
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      map.off('zoomend', scheduleClusterRefresh);
-      map.off('moveend', scheduleClusterRefresh);
-    };
-  }, [clusterEmployees, visitHistoryMode, routeUserId, focusedEmployeeUid]);
-
-  useEffect(() => {
-    if (!focusedCallId || !mapRef.current) return;
-    const marker = callMarkersRef.current.get(focusedCallId) as
-      | (L.Marker & { getLatLng?: () => L.LatLng; openPopup?: () => void })
-      | undefined;
-    if (!marker) return;
-    const latLng = marker.getLatLng?.();
-    if (latLng) {
-      mapRef.current.setView(latLng, Math.max(mapRef.current.getZoom(), 14), {
-        animate: true,
+    if (!focusedCallId || !map) return;
+    const call = doctorCalls.find((c) => c.id === focusedCallId);
+    if (!call || typeof call.lat !== 'number' || typeof call.lng !== 'number') {
+      return;
+    }
+    map.panTo({ lat: call.lat, lng: call.lng });
+    if ((map.getZoom() ?? 12) < 14) {
+      map.setZoom(14);
+    }
+    const anchor = callMarkerInstancesRef.current[focusedCallId];
+    if (anchor) {
+      const stopIndex = historyGpsCalls.findIndex((c) => c.id === focusedCallId);
+      setSelectedInfo({
+        kind: 'call',
+        id: call.id,
+        anchor,
+        call,
+        stopNo: stopIndex >= 0 ? stopIndex + 1 : undefined,
       });
     }
-    marker.openPopup?.();
-  }, [focusedCallId]);
+  }, [focusedCallId, map, doctorCalls, historyGpsCalls]);
 
+  // Focus selected employee in Live Map mode
   useEffect(() => {
-    if (visitHistoryMode || !focusedEmployeeUid || !mapRef.current) return;
-    const latestLoc = latestLocationsRef.current.find(
-      (l) => l.userId === focusedEmployeeUid
-    );
+    if (visitHistoryMode || !focusedEmployeeUid || !map) return;
+    const latestLoc = latestLocations.find((l) => l.userId === focusedEmployeeUid);
     if (!latestLoc) return;
-    const map = mapRef.current;
-    map.setView([latestLoc.lat, latestLoc.lng], Math.max(map.getZoom(), 15), {
-      animate: true,
-    });
+    map.panTo({ lat: latestLoc.lat, lng: latestLoc.lng });
+    if ((map.getZoom() ?? 12) < 15) {
+      map.setZoom(15);
+    }
     const timer = window.setTimeout(() => {
-      const marker = employeeMarkersRef.current.get(focusedEmployeeUid);
-      marker?.openPopup();
+      const anchor = empMarkerInstancesRef.current[focusedEmployeeUid];
+      if (anchor) {
+        setSelectedInfo({
+          kind: 'employee',
+          id: latestLoc.userId,
+          anchor,
+          loc: latestLoc,
+        });
+      }
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [focusedEmployeeUid, focusTick, visitHistoryMode]);
+  }, [focusedEmployeeUid, focusTick, visitHistoryMode, map, latestLocations]);
+
+  const initialCenter = useMemo(
+    () =>
+      geofenceCenter
+        ? { lat: geofenceCenter.lat, lng: geofenceCenter.lng }
+        : { lat: 19.076, lng: 72.8777 },
+    [geofenceCenter?.lat, geofenceCenter?.lng]
+  );
+
+  return (
+    <GoogleMap
+      mapId="DEMO_MAP_ID"
+      internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+      defaultCenter={initialCenter}
+      defaultZoom={12}
+      gestureHandling="greedy"
+      style={{ width: '100%', height: '100%' }}
+      onIdle={syncCameraMetrics}
+      onZoomChanged={syncCameraMetrics}
+    >
+      {/* Geofence Circle */}
+      {geofenceCenter && !visitHistoryMode && (
+        <Circle
+          center={{ lat: geofenceCenter.lat, lng: geofenceCenter.lng }}
+          radius={geofenceCenter.radiusM}
+          strokeColor="#0F2744"
+          strokeOpacity={0.8}
+          strokeWeight={1.5}
+          fillColor="#0F2744"
+          fillOpacity={0.08}
+        />
+      )}
+
+      {/* Customer Pins (Live Mode) */}
+      {!visitHistoryMode &&
+        customers.map((c) => {
+          if (typeof c.lat !== 'number' || typeof c.lng !== 'number') return null;
+          return (
+            <AdvancedMarkerWithRef
+              key={`cust_${c.id}`}
+              position={{ lat: c.lat, lng: c.lng }}
+              title={c.businessName}
+              zIndex={40}
+              onMarkerClick={(marker) =>
+                setSelectedInfo({
+                  kind: 'customer',
+                  id: c.id,
+                  anchor: marker,
+                  customer: c,
+                })
+              }
+            >
+              <Pin
+                background="#16A34A"
+                borderColor="#15803D"
+                glyphColor="#FFFFFF"
+                scale={0.75}
+              />
+            </AdvancedMarkerWithRef>
+          );
+        })}
+
+      {/* Visit History Mode Overlays */}
+      {visitHistoryMode && sortedHistoryPings.length > 1 && (
+        <Polyline
+          path={sortedHistoryPings.map((l) => ({ lat: l.lat, lng: l.lng }))}
+          strokeColor="#0F2744"
+          strokeOpacity={0.6}
+          strokeWeight={2.5}
+        />
+      )}
+
+      {visitHistoryMode &&
+        historyVisitPings.map((loc) => (
+          <AdvancedMarkerWithRef
+            key={`visit_${loc.id}`}
+            position={{ lat: loc.lat, lng: loc.lng }}
+            anchorPoint={AdvancedMarkerAnchorPoint.CENTER}
+            title={loc.customerName || loc.territory || 'Customer Visit'}
+            zIndex={60}
+            onMarkerClick={(marker) =>
+              setSelectedInfo({
+                kind: 'visit',
+                id: loc.id,
+                anchor: marker,
+                loc,
+              })
+            }
+          >
+            <div className="w-3.5 h-3.5 rounded-full bg-sky-500 border-2 border-[#0F2744] shadow-sm" />
+          </AdvancedMarkerWithRef>
+        ))}
+
+      {visitHistoryMode && historyGpsCalls.length > 1 && (
+        <Polyline
+          path={historyGpsCalls.map((c) => ({
+            lat: c.lat as number,
+            lng: c.lng as number,
+          }))}
+          strokeColor="#6D28D9"
+          strokeOpacity={0.85}
+          strokeWeight={3}
+        />
+      )}
+
+      {visitHistoryMode &&
+        historyGpsCalls.map((c, idx) => {
+          const stopNo = idx + 1;
+          const shortTime = getCallShortBadgeTime(c);
+          return (
+            <AdvancedMarkerWithRef
+              key={`hist_call_${c.id}`}
+              position={{ lat: c.lat as number, lng: c.lng as number }}
+              anchorPoint={AdvancedMarkerAnchorPoint.CENTER}
+              title={`#${stopNo} ${c.doctorName}`}
+              zIndex={200 + stopNo}
+              registerMarker={(marker) => {
+                if (marker) callMarkerInstancesRef.current[c.id] = marker;
+                else delete callMarkerInstancesRef.current[c.id];
+              }}
+              onMarkerClick={(marker) => {
+                onSelectCall?.(c.id);
+                setSelectedInfo({
+                  kind: 'call',
+                  id: c.id,
+                  anchor: marker,
+                  call: c,
+                  stopNo,
+                });
+              }}
+            >
+              <div className="inline-flex items-center gap-1 bg-[#5B21B6] text-white px-2 py-0.5 rounded-full text-[11px] font-bold whitespace-nowrap border-2 border-white shadow-md cursor-pointer">
+                <span>#{stopNo}</span>
+                {shortTime && (
+                  <span className="font-medium opacity-90 text-[10px]">
+                    {shortTime}
+                  </span>
+                )}
+              </div>
+            </AdvancedMarkerWithRef>
+          );
+        })}
+
+      {/* Live Mode Doctor Call Pins */}
+      {!visitHistoryMode &&
+        liveGpsCalls.map((c) => (
+          <AdvancedMarkerWithRef
+            key={`live_call_${c.id}`}
+            position={{ lat: c.lat as number, lng: c.lng as number }}
+            title={`Call: ${c.doctorName}`}
+            zIndex={80}
+            registerMarker={(marker) => {
+              if (marker) callMarkerInstancesRef.current[c.id] = marker;
+              else delete callMarkerInstancesRef.current[c.id];
+            }}
+            onMarkerClick={(marker) => {
+              onSelectCall?.(c.id);
+              setSelectedInfo({
+                kind: 'call',
+                id: c.id,
+                anchor: marker,
+                call: c,
+              });
+            }}
+          >
+            <Pin
+              background="#7C3AED"
+              borderColor="#5B21B6"
+              glyphColor="#FFFFFF"
+              scale={0.8}
+            />
+          </AdvancedMarkerWithRef>
+        ))}
+
+      {/* Live Route Polyline */}
+      {!visitHistoryMode && routeCoords.length > 1 && (
+        <Polyline
+          path={routeCoords}
+          strokeColor="#0F2744"
+          strokeOpacity={0.78}
+          strokeWeight={3}
+        />
+      )}
+
+      {/* Employee Accuracy Circles (zoomed in or selected route) */}
+      {!visitHistoryMode &&
+        clusterResult.clusters.map((cluster) => {
+          if (cluster.count !== 1) return null;
+          const loc = cluster.items[0];
+          const isSelectedRoute = Boolean(routeUserId && loc.userId === routeUserId);
+          if (zoom < 12 && !isSelectedRoute) return null;
+          const isLive = loc.trackingActive && !loc.isDemo && loc.status !== 'Checked Out';
+          const color = isLive ? '#15803D' : loc.isDemo ? '#64748B' : '#0F2744';
+          return (
+            <Circle
+              key={`acc_${loc.userId}`}
+              center={{ lat: loc.lat, lng: loc.lng }}
+              radius={Math.min(loc.accuracy || 30, 500)}
+              strokeColor={color}
+              strokeOpacity={0.6}
+              strokeWeight={1}
+              fillColor={color}
+              fillOpacity={0.12}
+            />
+          );
+        })}
+
+      {/* Employee Individual & Clustered Pins */}
+      {!visitHistoryMode &&
+        clusterResult.clusters.map((cluster) => {
+          if (cluster.count === 1) {
+            const loc = cluster.items[0];
+            const isLive = loc.trackingActive && !loc.isDemo && loc.status !== 'Checked Out';
+            const isSelectedRoute = Boolean(routeUserId && loc.userId === routeUserId);
+            const isFocusedEmp = Boolean(
+              focusedEmployeeUid && loc.userId === focusedEmployeeUid
+            );
+            const bgColor = isLive
+              ? '#15803D'
+              : loc.isDemo
+              ? '#64748B'
+              : '#0F2744';
+            const zIdx = isFocusedEmp ? 800 : isSelectedRoute ? 500 : isLive ? 250 : 120;
+
+            return (
+              <AdvancedMarkerWithRef
+                key={`emp_${loc.userId}`}
+                position={{ lat: loc.lat, lng: loc.lng }}
+                anchorPoint={AdvancedMarkerAnchorPoint.CENTER}
+                title={loc.employeeName}
+                zIndex={zIdx}
+                registerMarker={(marker) => {
+                  if (marker) empMarkerInstancesRef.current[loc.userId] = marker;
+                  else delete empMarkerInstancesRef.current[loc.userId];
+                }}
+                onMarkerClick={(marker) => {
+                  onSelectEmployee?.(loc.userId);
+                  setSelectedInfo({
+                    kind: 'employee',
+                    id: loc.userId,
+                    anchor: marker,
+                    loc,
+                  });
+                }}
+              >
+                <div
+                  className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold text-white whitespace-nowrap border-2 border-white cursor-pointer ${
+                    isFocusedEmp
+                      ? 'ring-4 ring-emerald-500/45 shadow-lg'
+                      : isSelectedRoute
+                      ? 'ring-3 ring-[#0F2744]/35 shadow-md'
+                      : 'shadow'
+                  }`}
+                  style={{ backgroundColor: bgColor }}
+                >
+                  {isLive && (
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-300 mr-1" />
+                  )}
+                  {loc.employeeName.split(' ')[0]}
+                </div>
+              </AdvancedMarkerWithRef>
+            );
+          }
+
+          const sizePx = cluster.count >= 50 ? 48 : cluster.count >= 10 ? 42 : 36;
+          const bgColor =
+            cluster.liveCount > 0
+              ? '#0F2744'
+              : cluster.demoCount === cluster.count
+              ? '#475569'
+              : '#1E293B';
+          const borderAccent = cluster.liveCount > 0 ? '#15803D' : '#CBD5E1';
+
+          return (
+            <AdvancedMarkerWithRef
+              key={cluster.id}
+              position={{ lat: cluster.lat, lng: cluster.lng }}
+              anchorPoint={AdvancedMarkerAnchorPoint.CENTER}
+              title={`${cluster.count} employees (${cluster.liveCount} live)`}
+              zIndex={300}
+              onMarkerClick={(marker) => {
+                if (cluster.hasGeographicSpread && map && (map.getZoom() ?? 12) < 15) {
+                  setSelectedInfo(null);
+                  const b = new window.google.maps.LatLngBounds(
+                    { lat: cluster.bounds.south, lng: cluster.bounds.west },
+                    { lat: cluster.bounds.north, lng: cluster.bounds.east }
+                  );
+                  map.fitBounds(b, 56);
+                  return;
+                }
+                setSelectedInfo({
+                  kind: 'cluster',
+                  id: cluster.id,
+                  anchor: marker,
+                  cluster,
+                });
+              }}
+            >
+              <div
+                className="rounded-full text-white flex flex-col items-center justify-center border-[3px] border-white font-mono tabular-nums leading-none cursor-pointer shadow-lg"
+                style={{
+                  width: `${sizePx}px`,
+                  height: `${sizePx}px`,
+                  backgroundColor: bgColor,
+                  boxShadow: `0 0 0 2px ${borderAccent}, 0 4px 12px rgba(15,23,42,0.3)`,
+                }}
+              >
+                <span className={cluster.count >= 50 ? 'text-[13px] font-bold' : 'text-xs font-bold'}>
+                  {cluster.count}
+                </span>
+                {cluster.liveCount > 0 && (
+                  <span className="text-[9px] font-semibold text-emerald-300 mt-0.5">
+                    {cluster.liveCount} live
+                  </span>
+                )}
+              </div>
+            </AdvancedMarkerWithRef>
+          );
+        })}
+
+      {/* Anchored InfoWindow */}
+      {selectedInfo && (
+        <InfoWindow
+          anchor={selectedInfo.anchor}
+          pixelOffset={[0, -4]}
+          onCloseClick={() => setSelectedInfo(null)}
+        >
+          {selectedInfo.kind === 'employee' && (
+            <div className="text-xs leading-relaxed min-w-[195px] text-slate-800 space-y-0.5">
+              <div className="font-bold text-[#0F2744]">
+                {selectedInfo.loc.employeeName}
+              </div>
+              <div
+                className={`font-semibold ${
+                  selectedInfo.loc.trackingActive &&
+                  !selectedInfo.loc.isDemo &&
+                  selectedInfo.loc.status !== 'Checked Out'
+                    ? 'text-[#15803D]'
+                    : 'text-slate-700'
+                }`}
+              >
+                {selectedInfo.loc.trackingActive &&
+                !selectedInfo.loc.isDemo &&
+                selectedInfo.loc.status !== 'Checked Out'
+                  ? '● LIVE GPS'
+                  : selectedInfo.loc.status}
+                {selectedInfo.loc.isDemo ? ' (Sample Demo)' : ''}
+              </div>
+              {selectedInfo.loc.customerName && (
+                <div>Place/Call: {selectedInfo.loc.customerName}</div>
+              )}
+              {selectedInfo.loc.note && <div>Note: {selectedInfo.loc.note}</div>}
+              <div>Territory: {selectedInfo.loc.territory || 'Assigned'}</div>
+              <div className="font-mono text-[11px]">
+                Coords: {selectedInfo.loc.lat.toFixed(5)},{' '}
+                {selectedInfo.loc.lng.toFixed(5)} (±
+                {Math.round(selectedInfo.loc.accuracy)}m)
+              </div>
+              <div>Updated: {formatTimestamp(selectedInfo.loc.recordedAt)}</div>
+              <a
+                href={`https://www.google.com/maps?q=${selectedInfo.loc.lat.toFixed(
+                  6
+                )},${selectedInfo.loc.lng.toFixed(6)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block mt-1 text-[#0F2744] font-semibold underline"
+              >
+                Open in Google Maps ↗
+              </a>
+            </div>
+          )}
+
+          {selectedInfo.kind === 'cluster' && (
+            <div className="text-xs min-w-[230px] max-w-[280px] text-slate-800">
+              <div className="font-bold text-[#0F2744] pb-1.5 border-b border-slate-200">
+                {selectedInfo.cluster.count} Field Personnel ·{' '}
+                {selectedInfo.cluster.liveCount} Live
+              </div>
+              <div className="max-h-[210px] overflow-y-auto divide-y divide-slate-100">
+                {selectedInfo.cluster.items.slice(0, 30).map((emp) => {
+                  const isLive = emp.trackingActive && !emp.isDemo;
+                  return (
+                    <div
+                      key={emp.userId}
+                      className="py-1.5 flex justify-between gap-2 items-start"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-900 truncate">
+                          {emp.employeeName}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {emp.territory || 'Field Zone'} ·{' '}
+                          {formatTimestamp(emp.recordedAt)}
+                        </div>
+                      </div>
+                      <span
+                        className={`text-[10px] font-bold whitespace-nowrap ${
+                          isLive ? 'text-[#15803D]' : 'text-slate-600'
+                        }`}
+                      >
+                        {isLive ? 'Live' : emp.status}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {selectedInfo.cluster.count > 30 && (
+                <div className="pt-1.5 text-[11px] text-slate-500 text-center">
+                  +{selectedInfo.cluster.count - 30} more employees in this cluster
+                </div>
+              )}
+            </div>
+          )}
+
+          {selectedInfo.kind === 'customer' && (
+            <div className="text-xs leading-relaxed text-slate-800">
+              <div className="font-bold text-[#0F2744]">
+                {selectedInfo.customer.businessName}
+              </div>
+              <div>
+                {selectedInfo.customer.category} · {selectedInfo.customer.city}
+              </div>
+              <div>Rep: {selectedInfo.customer.assignedEmployeeName}</div>
+            </div>
+          )}
+
+          {selectedInfo.kind === 'visit' && (
+            <div className="text-xs leading-relaxed text-slate-800">
+              <div className="font-bold text-[#0F2744]">
+                Visit Ping:{' '}
+                {selectedInfo.loc.customerName ||
+                  selectedInfo.loc.territory ||
+                  'Field Check-in'}
+              </div>
+              <div>Time: {formatTimestamp(selectedInfo.loc.recordedAt)}</div>
+              {selectedInfo.loc.note && <div>{selectedInfo.loc.note}</div>}
+              <div>Accuracy: ±{Math.round(selectedInfo.loc.accuracy)}m</div>
+            </div>
+          )}
+
+          {selectedInfo.kind === 'call' && (
+            <div className="text-xs leading-relaxed min-w-[210px] text-slate-800 space-y-0.5">
+              <div className="font-bold text-[#0F2744]">
+                {selectedInfo.stopNo ? `#${selectedInfo.stopNo} · ` : 'Call: '}
+                {selectedInfo.call.doctorName}
+              </div>
+              <div className="text-[#5B21B6] font-semibold">
+                ⏱ {getCallTimestampLabel(selectedInfo.call)}
+              </div>
+              <div>
+                <strong>Rep:</strong> {selectedInfo.call.employeeName}
+              </div>
+              <div>
+                <strong>Place:</strong>{' '}
+                {selectedInfo.call.locationName ||
+                  selectedInfo.call.areaBeat ||
+                  selectedInfo.call.clinicName ||
+                  'Call Location'}
+              </div>
+              {selectedInfo.call.clinicName && (
+                <div>
+                  <strong>Clinic:</strong> {selectedInfo.call.clinicName}
+                </div>
+              )}
+              <div>
+                <strong>Outcome:</strong> {selectedInfo.call.callOutcome}
+              </div>
+              {selectedInfo.call.productsShown.length > 0 && (
+                <div>
+                  <strong>Products:</strong>{' '}
+                  {selectedInfo.call.productsShown.slice(0, 4).join(', ')}
+                </div>
+              )}
+              {selectedInfo.call.doctorRemark && (
+                <div className="pt-0.5 text-slate-600 italic">
+                  &ldquo;{selectedInfo.call.doctorRemark}&rdquo;
+                </div>
+              )}
+            </div>
+          )}
+        </InfoWindow>
+      )}
+    </GoogleMap>
+  );
+};
+
+export const LiveMap: React.FC<LiveMapProps> = (props) => {
+  const { heightClass = 'h-[420px]' } = props;
+  const apiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim();
+
+  const [isOnline, setIsOnline] = useState(
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    const handleQuotaExceeded = () => setMapsQuotaExceeded(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('gmp-quota-exceeded', handleQuotaExceeded);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('gmp-quota-exceeded', handleQuotaExceeded);
+    };
+  }, []);
+
+  if (!isOnline || !apiKey || mapsQuotaExceeded) {
+    const badge = !isOnline
+      ? 'Offline Map · Serving Cached Tiles'
+      : mapsQuotaExceeded
+      ? 'Cached Fallback Map · Google Maps Quota/Auth Limit'
+      : 'Cached Base Map (No Google Maps API Key Configured)';
+    return <LeafletFallbackMap {...props} badgeText={badge} />;
+  }
 
   return (
     <div className="relative">
       <div
-        ref={containerRef}
         className={`w-full ${heightClass} rounded-xl border border-slate-200 overflow-hidden bg-slate-100`}
-      />
-      {!isOnline && (
-        <div className="absolute top-2.5 right-2.5 z-[400] px-2.5 py-1 rounded-lg bg-[#0F2744]/90 text-white text-[11px] font-semibold shadow-sm pointer-events-none">
-          Offline Map · Serving Cached Tiles
-        </div>
-      )}
+      >
+        <APIProvider
+          apiKey={apiKey}
+          libraries={['marker']}
+          language="en"
+          region="IN"
+          onError={() => setMapsQuotaExceeded(true)}
+        >
+          <GoogleLiveMapInner
+            {...props}
+            onMapsLoadError={() => setMapsQuotaExceeded(true)}
+          />
+        </APIProvider>
+      </div>
     </div>
   );
 };

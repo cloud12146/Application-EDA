@@ -18,6 +18,10 @@ import {
 } from '../lib/utils';
 import { logActivity, pushNotification } from '../lib/erpActions';
 import {
+  getUnifiedCurrentPosition,
+  UnifiedGeolocationPosition,
+} from '../lib/nativeGeolocation';
+import {
   AttendanceRecord,
   CompanySettings,
   Employee,
@@ -74,16 +78,10 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
     (a) => a.userId === currentUser.uid && a.date === today
   );
 
-  const getPosition = (): Promise<GeolocationPosition> =>
-    new Promise((resolve, reject) => {
-      if (!('geolocation' in navigator)) {
-        reject(new Error('Device geolocation is not available.'));
-        return;
-      }
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: true,
-        timeout: 12000,
-      });
+  const getPosition = (): Promise<UnifiedGeolocationPosition> =>
+    getUnifiedCurrentPosition({
+      enableHighAccuracy: true,
+      timeout: 12000,
     });
 
   const handleCheckIn = async () => {

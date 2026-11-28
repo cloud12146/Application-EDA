@@ -41,6 +41,7 @@ import {
   getLivePingStatusInfo,
   LiveTrackingController,
 } from '../lib/liveLocation';
+import { getUnifiedCurrentPosition } from '../lib/nativeGeolocation';
 import { getRoleDisplayLabel } from '../lib/roles';
 import { logActivity } from '../lib/erpActions';
 import {
@@ -278,53 +279,48 @@ export const LocationTrackingModule: React.FC<LocationTrackingModuleProps> = ({
     setGpsSuccess('Location tracking stopped.');
   };
 
-  const handleCustomerVisitCheckIn = (e: React.FormEvent) => {
+  const handleCustomerVisitCheckIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setGpsError('');
     setGpsSuccess('');
 
-    if (!('geolocation' in navigator)) {
-      setGpsError('Device geolocation is unavailable.');
-      return;
-    }
-
     const customer = customers.find((c) => c.id === selectedCustomerId);
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        await recordManualPing({
-          coords: pos.coords,
-          status: 'Customer Visit',
-          trackingActive: isTracking,
-          customer,
-          note:
-            visitNote.trim() ||
-            (customer ? `Visited ${customer.businessName}` : 'Field customer visit'),
-        });
-        await logActivity({
-          userId: currentUser.uid,
-          employeeName: currentUser.displayName,
-          action: 'Customer Visit',
-          entityType: customer ? 'customer' : 'location',
-          entityId: customer?.id,
-          details: customer
-            ? `GPS visit logged at ${customer.businessName} (±${Math.round(pos.coords.accuracy)}m)`
-            : `Field visit logged (±${Math.round(pos.coords.accuracy)}m)`,
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        });
-        setVisitNote('');
-        setSelectedCustomerId('');
-        setGpsSuccess('Customer visit location recorded with GPS timestamp.');
-      },
-      (err) => {
-        setGpsError(
-          err.code === err.PERMISSION_DENIED
-            ? 'Location permission denied. Cannot record fake coordinates.'
-            : 'Unable to acquire GPS fix for customer visit.'
-        );
-      },
-      { enableHighAccuracy: true, timeout: 12000 }
-    );
+    try {
+      const pos = await getUnifiedCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 12000,
+      });
+      await recordManualPing({
+        coords: pos.coords,
+        status: 'Customer Visit',
+        trackingActive: isTracking,
+        customer,
+        note:
+          visitNote.trim() ||
+          (customer ? `Visited ${customer.businessName}` : 'Field customer visit'),
+      });
+      await logActivity({
+        userId: currentUser.uid,
+        employeeName: currentUser.displayName,
+        action: 'Customer Visit',
+        entityType: customer ? 'customer' : 'location',
+        entityId: customer?.id,
+        details: customer
+          ? `GPS visit logged at ${customer.businessName} (±${Math.round(pos.coords.accuracy)}m)`
+          : `Field visit logged (±${Math.round(pos.coords.accuracy)}m)`,
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+      });
+      setVisitNote('');
+      setSelectedCustomerId('');
+      setGpsSuccess('Customer visit location recorded with GPS timestamp.');
+    } catch (err: any) {
+      setGpsError(
+        err?.code === 1
+          ? 'Location permission denied. Cannot record fake coordinates.'
+          : err?.message || 'Unable to acquire GPS fix for customer visit.'
+      );
+    }
   };
 
   const visibleLocations = useMemo(

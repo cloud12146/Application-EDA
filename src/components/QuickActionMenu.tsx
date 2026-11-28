@@ -32,6 +32,10 @@ import {
   reverseGeocodeCoords,
 } from '../lib/callLocation';
 import {
+  getUnifiedCurrentPosition,
+  UnifiedGeolocationPosition,
+} from '../lib/nativeGeolocation';
+import {
   calculateHaversineMeters,
   daysUntilDate,
   formatCurrency,
@@ -430,16 +434,10 @@ const QuickAttendanceModal: React.FC<{
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
-  const getPosition = (): Promise<GeolocationPosition> =>
-    new Promise((resolve, reject) => {
-      if (!('geolocation' in navigator)) {
-        reject(new Error('Device geolocation is not supported on this browser.'));
-        return;
-      }
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: true,
-        timeout: 12000,
-      });
+  const getPosition = (): Promise<UnifiedGeolocationPosition> =>
+    getUnifiedCurrentPosition({
+      enableHighAccuracy: true,
+      timeout: 12000,
     });
 
   const handleCheckIn = async () => {
@@ -819,15 +817,10 @@ const QuickVisitModal: React.FC<{
     }
   }, [visitType, callGps, captureDoctorCallLocation]);
 
-  const handleLogCustomerVisit = (e: React.FormEvent) => {
+  const handleLogCustomerVisit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr('');
     setMsg('');
-
-    if (!('geolocation' in navigator)) {
-      setErr('Device geolocation is unavailable on this browser.');
-      return;
-    }
 
     setSaving(true);
     const selectedCust = customers.find((c) => c.id === customerId);
@@ -835,76 +828,77 @@ const QuickVisitModal: React.FC<{
     const geofenceLng = myEmployee?.geofenceLng ?? settings?.officeLng ?? 72.8777;
     const geofenceRadius = myEmployee?.geofenceRadiusM ?? settings?.officeRadiusM ?? 500;
 
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const locId = generateId('loc');
-        const dist = calculateHaversineMeters(
-          pos.coords.latitude,
-          pos.coords.longitude,
-          geofenceLat,
-          geofenceLng
-        );
-        const noteText =
-          visitNote.trim() ||
-          (selectedCust ? `Visited ${selectedCust.businessName}` : 'Field customer visit');
+    try {
+      const pos = await getUnifiedCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 12000,
+      });
+      const locId = generateId('loc');
+      const dist = calculateHaversineMeters(
+        pos.coords.latitude,
+        pos.coords.longitude,
+        geofenceLat,
+        geofenceLng
+      );
+      const noteText =
+        visitNote.trim() ||
+        (selectedCust ? `Visited ${selectedCust.businessName}` : 'Field customer visit');
 
-        try {
-          await setDoc(doc(db, 'locations', locId), {
-            id: locId,
-            userId: currentUser.uid,
-            employeeName: currentUser.displayName,
-            territory: currentUser.territory || myEmployee?.territory || 'Field Zone',
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-            accuracy: Math.round(pos.coords.accuracy || 0),
-            trackingActive: true,
-            status: 'Customer Visit',
-            ...(selectedCust
-              ? { customerId: selectedCust.id, customerName: selectedCust.businessName }
-              : {}),
-            withinGeofence: dist <= geofenceRadius,
-            note: noteText.slice(0, 240),
-            recordedAt: serverTimestamp(),
-          });
+      await setDoc(doc(db, 'locations', locId), {
+        id: locId,
+        userId: currentUser.uid,
+        employeeName: currentUser.displayName,
+        territory: currentUser.territory || myEmployee?.territory || 'Field Zone',
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        accuracy: Math.round(pos.coords.accuracy || 0),
+        trackingActive: true,
+        status: 'Customer Visit',
+        ...(selectedCust
+          ? { customerId: selectedCust.id, customerName: selectedCust.businessName }
+          : {}),
+        withinGeofence: dist <= geofenceRadius,
+        note: noteText.slice(0, 240),
+        recordedAt: serverTimestamp(),
+      });
 
-          await logActivity({
-            userId: currentUser.uid,
-            employeeName: currentUser.displayName,
-            action: 'Customer Visit',
-            entityType: selectedCust ? 'customer' : 'location',
-            entityId: selectedCust?.id || locId,
-            details: selectedCust
-              ? `GPS visit logged at ${selectedCust.businessName} (±${Math.round(
-                  pos.coords.accuracy || 0
-                )}m)`
-              : `Field visit logged (±${Math.round(pos.coords.accuracy || 0)}m): ${noteText}`,
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-          });
+      await logActivity({
+        userId: currentUser.uid,
+        employeeName: currentUser.displayName,
+        action: 'Customer Visit',
+        entityType: selectedCust ? 'customer' : 'location',
+        entityId: selectedCust?.id || locId,
+        details: selectedCust
+          ? `GPS visit logged at ${selectedCust.businessName} (±${Math.round(
+              pos.coords.accuracy || 0
+            )}m)`
+          : `Field visit logged (±${Math.round(pos.coords.accuracy || 0)}m): ${noteText}`,
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+      });
 
-          setVisitNote('');
-          setCustomerId('');
-          setMsg(
-            selectedCust
-              ? `GPS visit logged for ${selectedCust.businessName}.`
-              : 'Field visit logged with GPS coordinates.'
-          );
-        } catch (error) {
-          handleFirestoreError(error, OperationType.CREATE, `locations/${locId}`);
-        } finally {
-          setSaving(false);
-        }
-      },
-      (geoErr) => {
-        setSaving(false);
-        setErr(
-          geoErr.code === geoErr.PERMISSION_DENIED
-            ? 'Location permission denied. Enable GPS access to log a verified visit.'
-            : 'Unable to acquire GPS signal for visit check-in.'
-        );
-      },
-      { enableHighAccuracy: true, timeout: 12000 }
-    );
+      setVisitNote('');
+      setCustomerId('');
+      setMsg(
+        selectedCust
+          ? `GPS visit logged for ${selectedCust.businessName}.`
+          : 'Field visit logged with GPS coordinates.'
+      );
+    } catch (error: any) {
+      if (error?.code === 1) {
+        setErr('Location permission denied. Enable GPS access to log a verified visit.');
+      } else if (error?.code === 2 || error?.code === 3) {
+        setErr('Unable to acquire GPS signal for visit check-in.');
+      } else if (typeof error?.message === 'string' && error.message.includes('Firestore Error')) {
+        throw error;
+      } else if (error?.code && String(error.code).startsWith('permission-denied')) {
+        handleFirestoreError(error, OperationType.CREATE, 'locations');
+      } else {
+        setErr(error?.message || 'Unable to acquire GPS signal for visit check-in.');
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleLogDoctorCall = async (e: React.FormEvent) => {
